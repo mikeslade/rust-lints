@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Thin shim used to build the rustc_private cdylib with a pinned nightly toolchain
+# provided out-of-band (e.g. by the Nix devshell). Mirrors the per-project shims
+# the consuming repos already use, but keyed on RUST_LINTS_* env vars.
+
+export RUSTC="${RUST_LINTS_RUSTC:?RUST_LINTS_RUSTC is not set}"
+export RUSTDOC="${RUST_LINTS_RUSTDOC:?RUST_LINTS_RUSTDOC is not set}"
+export RUSTUP_TOOLCHAIN="${RUST_LINTS_RUSTUP_TOOLCHAIN:-nightly-2026-04-16-x86_64-unknown-linux-gnu}"
+
+exec "${RUST_LINTS_CARGO:?RUST_LINTS_CARGO is not set}" "$@"

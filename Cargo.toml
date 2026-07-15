@@ -1,0 +1,18 @@
+[package]
+name = "rust_lints"
+version = "0.1.0"
+authors = ["TechZen Labs"]
+description = "Architecture-policy Rust lints (Dylint): SQL-seam ownership, HTTP wrapper, blocking-in-async, bounded channels, bool params, file length"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+dylint_linting = "6.0.0"
+
+[workspace]
+
+[package.metadata.rust-analyzer]
+rustc_private = true

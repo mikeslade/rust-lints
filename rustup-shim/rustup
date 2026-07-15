@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+toolchain="${RUST_LINTS_RUSTUP_TOOLCHAIN:-nightly-2026-04-16-x86_64-unknown-linux-gnu}"
+
+case "${1:-}" in
+  show)
+    if [[ "${2:-}" == "active-toolchain" ]]; then
+      printf '%s (overridden by rust-lints Dylint Nix shim)\n' "${toolchain}"
+      exit 0
+    fi
+    ;;
+  which)
+    case "${2:-}" in
+      cargo)
+        printf '%s\n' "${RUST_LINTS_CARGO:?RUST_LINTS_CARGO is not set}"
+        exit 0
+        ;;
+      rustc)
+        printf '%s\n' "${RUST_LINTS_RUSTC:?RUST_LINTS_RUSTC is not set}"
+        exit 0
+        ;;
+      rustdoc)
+        printf '%s\n' "${RUST_LINTS_RUSTDOC:?RUST_LINTS_RUSTDOC is not set}"
+        exit 0
+        ;;
+    esac
+    ;;
+esac
+
+echo "rust-lints Dylint rustup shim does not implement: $*" >&2
+exit 1
