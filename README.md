@@ -45,6 +45,7 @@ The library links against a pinned `rustc_private` nightly (see
   toolchain-suffixed symlink `cargo dylint --no-build` resolves
 - `packages.toolchain` — the pinned nightly, for building via a local shim
 - `devShells.default` — toolchain + cargo-dylint + dylint-link
+  (`direnv allow` loads it automatically via the checked-in `.envrc`)
 
 ## Migrating from review-kit's `review_kit_lints`
 

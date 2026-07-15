@@ -52,6 +52,46 @@
 
     cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
+    # cargo-dylint and dylint-link are not packaged in nixpkgs, so the
+    # devshell builds them with the same pinned toolchain. Built from the
+    # dylint repo rather than crates.io: dylint's build.rs packages the
+    # sibling `driver/` directory, which the crates.io tarball omits.
+    # Version matches the dylint_linting pin in Cargo.lock.
+    dylintToolsVersion = "6.0.1";
+    dylintToolsSrc = pkgs.fetchFromGitHub {
+      owner = "trailofbits";
+      repo = "dylint";
+      rev = "v${dylintToolsVersion}";
+      hash = "sha256-SteI8+BZ5ej38goCOD+PRJozt7qVSTp/IFJXyeBblAw=";
+    };
+    dylintToolsArgs = {
+      pname = "dylint-tools";
+      version = dylintToolsVersion;
+      src = dylintToolsSrc;
+      doCheck = false;
+      nativeBuildInputs = [pkgs.pkg-config];
+      buildInputs = [pkgs.openssl];
+    };
+    dylintToolsArtifacts = craneLib.buildDepsOnly dylintToolsArgs;
+    buildDylintTool = pname:
+      craneLib.buildPackage (dylintToolsArgs
+        // {
+          inherit pname;
+          cargoArtifacts = dylintToolsArtifacts;
+          cargoExtraArgs = "-p ${pname}";
+          # dylint's build.rs bakes an absolute path to the driver sources
+          # (used at runtime to build per-toolchain drivers); the sandbox
+          # path dies with the build, so point it at the store copy, which
+          # the baked reference then keeps alive.
+          postPatch = ''
+            substituteInPlace dylint/build.rs \
+              --replace-fail 'dylint_manifest_dir.join("../driver")' \
+                'std::path::PathBuf::from("${dylintToolsSrc}/driver")'
+          '';
+        });
+    cargoDylint = buildDylintTool "cargo-dylint";
+    dylintLink = buildDylintTool "dylint-link";
+
     dylintLib = craneLib.buildPackage (commonArgs
       // {
         inherit cargoArtifacts;
@@ -79,8 +119,21 @@
     checks.${system}.build = dylintLib;
 
     devShells.${system}.default = pkgs.mkShell {
-      packages = [rustToolchain pkgs.cargo-dylint pkgs.dylint-link];
+      packages = [rustToolchain cargoDylint dylintLink];
+      # `cargo dylint` compiles its per-toolchain driver at runtime; the
+      # driver's dep tree includes openssl-sys.
+      nativeBuildInputs = [pkgs.pkg-config];
+      buildInputs = [pkgs.openssl];
       LD_LIBRARY_PATH = "${rustToolchain}/lib";
+      # No rustup in the shell: dylint-link and `cargo dylint` resolve the
+      # toolchain via RUSTUP_TOOLCHAIN and the rustup-shim wrappers.
+      RUSTUP_TOOLCHAIN = toolchainName;
+      RUST_LINTS_CARGO = "${rustToolchain}/bin/cargo";
+      RUST_LINTS_RUSTC = "${rustToolchain}/bin/rustc";
+      RUST_LINTS_RUSTDOC = "${rustToolchain}/bin/rustdoc";
+      shellHook = ''
+        export PATH="$PWD/rustup-shim:$PATH"
+      '';
     };
   };
 }
