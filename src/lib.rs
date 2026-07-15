@@ -3,10 +3,9 @@
 
 //! Shared architecture-policy Dylint.
 //!
-//! This crate is the generic union of the per-project policy lints that
-//! benefits-platform, radiology-platform, and data-lakehouse each vendored as a
-//! near-identical copy. A single lint, [`REVIEW_KIT_POLICY_CHECKS`], bundles the
-//! policy passes those crates shared:
+//! This crate is the generic union of policy lints that several production
+//! Rust workspaces vendored as near-identical copies. A single lint,
+//! [`RUST_LINTS_POLICY_CHECKS`], bundles the shared policy passes:
 //!
 //! 1. SQL seam: SQLx / database-adapter APIs must stay behind reviewed db crates.
 //! 2. HTTP wrapper: outbound HTTP must go through reviewed wrapper crates.
@@ -57,7 +56,7 @@ dylint_linting::declare_late_lint! {
     /// do not absorb database adapters, PII/PHI-sensitive network behavior, or
     /// async scheduler hazards. Source files are also kept small enough to parse
     /// and review.
-    pub REVIEW_KIT_POLICY_CHECKS,
+    pub RUST_LINTS_POLICY_CHECKS,
     Warn,
     "enforces shared Rust architecture policy checks"
 }
@@ -119,7 +118,7 @@ mod config {
     }
 
     /// `RUST_LINTS_LABEL`: free-text platform label woven into messages
-    /// (e.g. "benefits platform"). Default: "platform".
+    /// (e.g. "orders platform"). Default: "platform".
     pub fn label() -> String {
         env::var("RUST_LINTS_LABEL").unwrap_or_else(|_| "platform".to_owned())
     }
@@ -206,7 +205,7 @@ mod config {
     }
 }
 
-impl<'tcx> LateLintPass<'tcx> for ReviewKitPolicyChecks {
+impl<'tcx> LateLintPass<'tcx> for RustLintsPolicyChecks {
     fn check_crate(&mut self, cx: &LateContext<'tcx>) {
         check_file_lengths(cx);
     }
@@ -1077,18 +1076,18 @@ fn snippet(cx: &LateContext<'_>, span: Span) -> String {
 
 fn emit(cx: &LateContext<'_>, span: Span, message: String, help: String) {
     cx.emit_span_lint(
-        REVIEW_KIT_POLICY_CHECKS,
+        RUST_LINTS_POLICY_CHECKS,
         MultiSpan::from_span(span),
-        ReviewKitPolicyDiag { message, help },
+        RustLintsPolicyDiag { message, help },
     );
 }
 
-struct ReviewKitPolicyDiag {
+struct RustLintsPolicyDiag {
     message: String,
     help: String,
 }
 
-impl<'a, G: EmissionGuarantee> Diagnostic<'a, G> for ReviewKitPolicyDiag {
+impl<'a, G: EmissionGuarantee> Diagnostic<'a, G> for RustLintsPolicyDiag {
     fn into_diag(self, dcx: rustc_errors::DiagCtxtHandle<'a>, level: Level) -> Diag<'a, G> {
         let mut diag = Diag::new(dcx, level, self.message);
         diag.help(self.help);
@@ -1193,10 +1192,10 @@ SELECT id FROM workers"#"##
 
     #[test]
     fn inline_exception_marker_is_configurable() {
-        // A project supplying its own marker (e.g. the benefits prefix) still works.
+        // A project supplying its own marker (e.g. a custom prefix) still works.
         assert!(has_inline_file_length_exception_with_marker(
-            "// benefits-file-length-exception: owner=o reason=r expires=2026-08-01\nfn main() {}",
-            "benefits-file-length-exception",
+            "// acme-file-length-exception: owner=o reason=r expires=2026-08-01\nfn main() {}",
+            "acme-file-length-exception",
         ));
     }
 

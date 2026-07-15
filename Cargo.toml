@@ -5,6 +5,7 @@ authors = ["TechZen Labs"]
 description = "Architecture-policy Rust lints (Dylint): SQL-seam ownership, HTTP wrapper, blocking-in-async, bounded channels, bool params, file length"
 edition = "2024"
 publish = false
+license = "MIT OR Apache-2.0"
 
 [lib]
 crate-type = ["cdylib"]
