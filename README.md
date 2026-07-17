@@ -1,9 +1,7 @@
 # rust-lints
 
 Architecture-policy Rust lints as a [Dylint](https://github.com/trailofbits/dylint)
-library — the mechanical enforcement for rules Clippy cannot express
-(extracted from review-kit; see the rust-conventions workspace reference for
-the rules' rationale):
+library — the mechanical enforcement for rules Clippy cannot express:
 
 - **SQL-seam ownership** — SQL lives only in the persistence-seam crate.
 - **Inline-SQL markers** — every inline SQL literal starts with `--sql`.
@@ -46,16 +44,6 @@ The library links against a pinned `rustc_private` nightly (see
 - `packages.toolchain` — the pinned nightly, for building via a local shim
 - `devShells.default` — toolchain + cargo-dylint + dylint-link
   (`direnv allow` loads it automatically via the checked-in `.envrc`)
-
-## Migrating from review-kit's `review_kit_lints`
-
-Mechanical renames in the consuming repo:
-
-- flake input `review-kit` → `rust-lints`; attr `.#dylints` still works
-- env prefix `RK_DYLINT_` → `RUST_LINTS_`
-- `#[allow(review_kit_policy_checks)]` → `#[allow(rust_lints_policy_checks)]`
-- markers `review-kit-file-length-exception` → `rust-lints-file-length-exception`,
-  `review-kit-dynamic-sql` → `rust-lints-dynamic-sql`
 
 ## Fixtures
 
