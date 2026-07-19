@@ -926,11 +926,188 @@ fn is_blocking_method_name(method_name: &str) -> bool {
 }
 
 fn contains_sqlx_boundary_token(snippet: &str) -> bool {
-    snippet.contains("sqlx::")
-        || snippet.contains("PgPool")
-        || snippet.contains("PoolOptions")
-        || snippet.contains("sqlx::Postgres")
-        || snippet.contains("AssertSqlSafe")
+    // Match boundary tokens only where they are *code* — never where they merely
+    // appear inside a string/char literal or a comment (e.g. a PHI-free audit
+    // note that says "no PgPool / durable write"). Blanking literal/comment
+    // contents keeps a genuine `sqlx::`/`PgPool` path or type flagged while a
+    // documentation mention of the same word is not.
+    let code = code_without_literals_and_comments(snippet);
+    code.contains("sqlx::")
+        || code.contains("PgPool")
+        || code.contains("PoolOptions")
+        || code.contains("sqlx::Postgres")
+        || code.contains("AssertSqlSafe")
+}
+
+/// Return `snippet` with the *contents* of string, byte-string, and char
+/// literals and of line/block comments replaced by spaces, leaving all
+/// delimiters and every token outside a literal or comment in place.
+///
+/// Token checks run over source snippets, so a bare substring match would fire
+/// on a word that only appears inside a string literal or a comment. Blanking
+/// those regions first makes the checks see real code only. The scanner handles
+/// regular/byte strings (with `\` escapes), raw strings (`r"…"`, `r#"…"#`, and
+/// the byte-raw forms — no escapes, hash-balanced terminator), char literals
+/// (distinguished from lifetimes/labels: a char literal is `'`, one char or an
+/// escape, then `'`), and line (`//`) and nested block (`/* … */`) comments.
+fn code_without_literals_and_comments(snippet: &str) -> String {
+    let chars: Vec<char> = snippet.chars().collect();
+    let n = chars.len();
+    let mut out = String::with_capacity(snippet.len());
+    let mut i = 0;
+
+    while i < n {
+        let c = chars[i];
+
+        // Line comment: `//` to end of line.
+        if c == '/' && i + 1 < n && chars[i + 1] == '/' {
+            out.push_str("//");
+            i += 2;
+            while i < n && chars[i] != '\n' {
+                out.push(' ');
+                i += 1;
+            }
+            continue;
+        }
+
+        // Block comment: `/* … */`, nested.
+        if c == '/' && i + 1 < n && chars[i + 1] == '*' {
+            out.push_str("  ");
+            i += 2;
+            let mut depth = 1usize;
+            while i < n && depth > 0 {
+                if chars[i] == '/' && i + 1 < n && chars[i + 1] == '*' {
+                    depth += 1;
+                    out.push_str("  ");
+                    i += 2;
+                } else if chars[i] == '*' && i + 1 < n && chars[i + 1] == '/' {
+                    depth -= 1;
+                    out.push_str("  ");
+                    i += 2;
+                } else {
+                    out.push(' ');
+                    i += 1;
+                }
+            }
+            continue;
+        }
+
+        // Raw string: optional `b`, then `r`, then N `#`, then `"`; body ends at
+        // `"` followed by the same N `#`. No escape processing.
+        if c == 'r' || (c == 'b' && i + 1 < n && chars[i + 1] == 'r') {
+            let start = i;
+            let mut j = i;
+            if chars[j] == 'b' {
+                j += 1;
+            }
+            // chars[j] == 'r'
+            let mut k = j + 1;
+            let mut hashes = 0usize;
+            while k < n && chars[k] == '#' {
+                hashes += 1;
+                k += 1;
+            }
+            if k < n && chars[k] == '"' {
+                for &pc in &chars[start..=k] {
+                    out.push(pc);
+                }
+                i = k + 1;
+                loop {
+                    if i >= n {
+                        break;
+                    }
+                    if chars[i] == '"' {
+                        let mut m = i + 1;
+                        let mut cnt = 0;
+                        while m < n && cnt < hashes && chars[m] == '#' {
+                            cnt += 1;
+                            m += 1;
+                        }
+                        if cnt == hashes {
+                            out.push('"');
+                            for _ in 0..hashes {
+                                out.push('#');
+                            }
+                            i = i + 1 + hashes;
+                            break;
+                        }
+                    }
+                    out.push(' ');
+                    i += 1;
+                }
+                continue;
+            }
+            // Not a raw string (e.g. an identifier like `row`); fall through.
+        }
+
+        // Regular or byte string: `"…"` / `b"…"` with `\` escapes.
+        if c == '"' || (c == 'b' && i + 1 < n && chars[i + 1] == '"') {
+            if c == 'b' {
+                out.push('b');
+                i += 1;
+            }
+            out.push('"');
+            i += 1;
+            while i < n {
+                if chars[i] == '\\' && i + 1 < n {
+                    out.push_str("  ");
+                    i += 2;
+                    continue;
+                }
+                if chars[i] == '"' {
+                    out.push('"');
+                    i += 1;
+                    break;
+                }
+                out.push(' ');
+                i += 1;
+            }
+            continue;
+        }
+
+        // Char literal vs lifetime/label. A char literal is `'` then one char or
+        // an escape then `'`; anything else beginning with `'` is a lifetime or
+        // loop label and is left as ordinary code.
+        if c == '\'' {
+            if i + 1 < n && chars[i + 1] == '\\' {
+                // Escaped char literal: `'` `\` <escaped> [payload…] `'`.
+                out.push('\'');
+                i += 1; // at backslash
+                out.push(' ');
+                i += 1; // blank backslash
+                if i < n {
+                    out.push(' ');
+                    i += 1; // blank the escaped char
+                }
+                while i < n && chars[i] != '\'' {
+                    out.push(' ');
+                    i += 1;
+                }
+                if i < n {
+                    out.push('\'');
+                    i += 1;
+                }
+                continue;
+            }
+            if i + 2 < n && chars[i + 2] == '\'' {
+                // Simple char literal: `'X'`.
+                out.push('\'');
+                out.push(' ');
+                out.push('\'');
+                i += 3;
+                continue;
+            }
+            // Lifetime / label tick.
+            out.push('\'');
+            i += 1;
+            continue;
+        }
+
+        out.push(c);
+        i += 1;
+    }
+
+    out
 }
 
 fn contains_dynamic_sql_argument(snippet: &str) -> bool {
@@ -1114,6 +1291,39 @@ mod tests {
         assert!(contains_sqlx_boundary_token("PoolOptions::new()"));
         assert!(contains_sqlx_boundary_token("AssertSqlSafe(sql)"));
         assert!(!contains_sqlx_boundary_token("let value = 42;"));
+    }
+
+    #[test]
+    fn ignores_boundary_tokens_inside_literals_and_comments() {
+        // A boundary word that appears only inside a string literal is a
+        // documentation mention, not database-adapter usage.
+        assert!(!contains_sqlx_boundary_token(
+            "\"read-only exit-package checksum verification; no PgPool / durable write\""
+        ));
+        // The same holds when the literal is one argument of an enclosing call
+        // (the whole-expression snippet still contains the string).
+        assert!(!contains_sqlx_boundary_token(
+            "row(command, exempt(E::NoDurableSideEffect), \"no PgPool / durable write\")"
+        ));
+        // Raw strings and comments are covered too.
+        assert!(!contains_sqlx_boundary_token(
+            "let note = r#\"emitted alongside sqlx::query in the writer\"#;"
+        ));
+        assert!(!contains_sqlx_boundary_token("// this row reaches no PgPool"));
+        assert!(!contains_sqlx_boundary_token(
+            "let n = 1; /* PgPool lives in platform-db */ let m = 2;"
+        ));
+        // Real code usage is still flagged even with an adjacent note string.
+        assert!(contains_sqlx_boundary_token(
+            "let pool: PgPool = get(); // returns the PgPool"
+        ));
+        assert!(contains_sqlx_boundary_token(
+            "sqlx::query(\"select 1\").execute(&pool)"
+        ));
+        // A lifetime/label beginning with `'` must not swallow following code.
+        assert!(contains_sqlx_boundary_token(
+            "fn f<'a>(p: &'a PgPool) -> &'a PgPool { p }"
+        ));
     }
 
     #[test]
