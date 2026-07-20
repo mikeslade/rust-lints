@@ -545,6 +545,20 @@ fn check_silent_numeric_saturation(cx: &LateContext<'_>, expr: &Expr<'_>) {
         return;
     }
 
+    // A `cargo test` / `--test` build recompiles the crate with `#[cfg(test)]`
+    // active and a synthesized harness; that build is not the persisted/wire
+    // surface this pass audits, so skip the whole compilation — the same guard
+    // the bool-param pass carries. Without it, `--all-targets` runs compile the
+    // `#[cfg(test)]` modules (their `#[cfg(test)]` attrs already stripped by
+    // cfg-expansion, so they are indistinguishable from ordinary code in a late
+    // pass) and a `try_from(...).unwrap_or(...)` in a test fixture — where there
+    // is no persisted or wire value to corrupt — is flagged as if it were
+    // production. Production code is still audited by the non-test lib/bin
+    // builds, where `is_test_crate()` is false.
+    if cx.tcx.sess.is_test_crate() {
+        return;
+    }
+
     let ExprKind::MethodCall(segment, receiver, _, _) = expr.kind else {
         return;
     };

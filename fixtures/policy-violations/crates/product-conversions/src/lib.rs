@@ -123,8 +123,18 @@ mod tests {
     // CLEAN under #[cfg(test)]: bool params in test helpers are not flagged.
     pub fn assert_rendered(_strict: bool) {}
 
+    // CLEAN under #[cfg(test)]: the silent-saturation pass skips the test-crate
+    // build, so a saturating conversion in a fixture (no persisted/wire value to
+    // corrupt) is not flagged even though the `unwrap_or` shape is present. This
+    // is the negative control for the test-code skip — if the pass ever fired in
+    // test code again, this line would flag and the corpus run would fail.
+    pub fn fixture_narrow(count: usize) -> i32 {
+        i32::try_from(count).unwrap_or(i32::MAX)
+    }
+
     #[test]
     fn renders() {
         assert_rendered(true);
+        let _ = fixture_narrow(0);
     }
 }
