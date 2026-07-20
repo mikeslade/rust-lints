@@ -440,6 +440,10 @@ fn check_inline_sql_marker(
         return;
     }
 
+    if in_non_production_target(cx, span) {
+        return;
+    }
+
     if !matches!(expr_kind, ExprKind::Lit(_)) {
         return;
     }
@@ -456,7 +460,10 @@ fn check_inline_sql_marker(
 }
 
 fn check_sqlx_boundary(cx: &LateContext<'_>, span: Span, snippet: &str) {
-    if in_sqlx_owner_path(cx, span) || in_lint_fixture_path(cx, span) {
+    if in_sqlx_owner_path(cx, span)
+        || in_lint_fixture_path(cx, span)
+        || in_non_production_target(cx, span)
+    {
         return;
     }
 
@@ -472,7 +479,7 @@ fn check_sqlx_boundary(cx: &LateContext<'_>, span: Span, snippet: &str) {
 }
 
 fn check_dynamic_sqlx_safety(cx: &LateContext<'_>, span: Span, snippet: &str) {
-    if !in_sqlx_owner_path(cx, span) {
+    if !in_sqlx_owner_path(cx, span) || in_non_production_target(cx, span) {
         return;
     }
 
@@ -497,6 +504,10 @@ fn check_dynamic_sqlx_safety(cx: &LateContext<'_>, span: Span, snippet: &str) {
 
 fn check_strict_compile_time_sqlx(cx: &LateContext<'_>, span: Span, snippet: &str) {
     if !config::strict_sqlx_enabled() {
+        return;
+    }
+
+    if in_non_production_target(cx, span) {
         return;
     }
 
@@ -812,6 +823,23 @@ fn in_http_owner_path(cx: &LateContext<'_>, span: Span) -> bool {
 
 fn in_lint_fixture_path(cx: &LateContext<'_>, span: Span) -> bool {
     in_path(cx, span, &config::fixture_path_prefix())
+}
+
+/// Non-production compilation targets that the SQLx-policy passes do not audit:
+/// the `--test` build (the synthesized harness plus `#[cfg(test)]` code) and
+/// `examples/` crates (lab-gated live-DB evidence scripts).
+///
+/// The SQLx-policy lints (`strict_sqlx`, `sqlx_boundary`, `require_sql_marker`,
+/// `dynamic_sqlx_safety`) exist to keep PRODUCTION SQL compile-checked, in a
+/// reviewed crate, and marked — a runtime `sqlx::query` in a test or an
+/// evidence script is expected and is exercised against a real database, so a
+/// SQL error there fails the run immediately. Production code stays fully
+/// covered: it is linted by the normal `lib`/`bin` build (`is_test_crate()` is
+/// false and its file is not under `examples/`). Skipping the test build here
+/// loses no production coverage because that same production code is linted in
+/// its non-test build.
+fn in_non_production_target(cx: &LateContext<'_>, span: Span) -> bool {
+    cx.tcx.sess.is_test_crate() || in_path(cx, span, "/examples/")
 }
 
 fn in_async_context_without_blocking_quarantine(cx: &LateContext<'_>, expr: &Expr<'_>) -> bool {
