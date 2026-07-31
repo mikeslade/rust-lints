@@ -948,10 +948,52 @@ fn is_blocking_function_call(snippet: &str) -> bool {
         || normalized.ends_with("::block_on")
 }
 
+/// `std::net` types that are pure *address values* — they parse, compare, and
+/// project bytes, and never touch a socket, the OS resolver, or the filesystem.
+///
+/// The `std::net::` prefix in [`is_blocking_path`] is deliberately coarse: it
+/// covers the whole synchronous socket surface (`TcpStream`, `TcpListener`,
+/// `UdpSocket`, and DNS resolution through `ToSocketAddrs`) without enumerating
+/// method names, so a blocking API added to `std::net` later is caught by
+/// default rather than by a later edit to this list. That default is right for
+/// everything in `std::net` that owns a file descriptor, and wrong for the
+/// address types, which own nothing — `addr.port()` beside a `tokio` bind is a
+/// pure field read and stalls no worker thread.
+///
+/// The exemption is by TYPE, not by method name, and that is what makes it
+/// safe: every inherent method on these types is a getter, setter, predicate,
+/// or conversion over in-memory bytes, so no blocking call can hide behind one.
+/// A trait method invoked on an address value resolves to the *trait's* path
+/// (`std::net::ToSocketAddrs::to_socket_addrs`), not to the type's, so the
+/// blocking resolver surface stays flagged. Accessors on the socket types
+/// themselves (`TcpStream::local_addr`, `TcpStream::nodelay`) also stay
+/// flagged: a synchronous socket has no business in an async context at all,
+/// and the lint should keep saying so.
+const NON_BLOCKING_NET_VALUE_TYPES: &[&str] = &[
+    "std::net::SocketAddr",
+    "std::net::SocketAddrV4",
+    "std::net::SocketAddrV6",
+    "std::net::IpAddr",
+    "std::net::Ipv4Addr",
+    "std::net::Ipv6Addr",
+    "std::net::AddrParseError",
+    "std::net::Shutdown",
+];
+
+/// True when `path` names an associated item of a [`NON_BLOCKING_NET_VALUE_TYPES`]
+/// entry. The trailing `::` is required so `std::net::SocketAddr` does not
+/// swallow `std::net::SocketAddrV4`, and so a hypothetical
+/// `std::net::IpAddrStream::recv` is not exempted by the `IpAddr` entry.
+fn is_non_blocking_net_value_path(path: &str) -> bool {
+    NON_BLOCKING_NET_VALUE_TYPES
+        .iter()
+        .any(|ty| path.starts_with(ty) && path[ty.len()..].starts_with("::"))
+}
+
 fn is_blocking_path(path: &str) -> bool {
     path.starts_with("std::thread::sleep")
         || path.starts_with("std::fs::")
-        || path.starts_with("std::net::")
+        || (path.starts_with("std::net::") && !is_non_blocking_net_value_path(path))
         || path.starts_with("std::process::Command")
         || path.starts_with("std::process::Child")
         || path.starts_with("std::sync::mpsc::")
@@ -1322,8 +1364,8 @@ mod tests {
         has_inline_file_length_exception_with_marker, inventory_lists_path,
         is_blocking_function_call, is_blocking_method_name, is_blocking_path,
         is_blocking_quarantine_call, is_exempt_fn_name, is_fallible_conversion_name,
-        is_repo_rust_source_path_with_roots, is_sqlx_runtime_query, is_unbounded_channel_path,
-        is_unwrap_or_family, string_literal_starts_with_sql_marker,
+        is_non_blocking_net_value_path, is_repo_rust_source_path_with_roots, is_sqlx_runtime_query,
+        is_unbounded_channel_path, is_unwrap_or_family, string_literal_starts_with_sql_marker,
     };
 
     #[test]
@@ -1494,6 +1536,62 @@ SELECT id FROM workers"#"##
         assert!(!is_blocking_function_call("tokio::time::sleep"));
         assert!(!is_blocking_path("std::process::id"));
         assert!(!is_blocking_method_name("try_recv"));
+    }
+
+    /// The `std::net::` arm must keep every file-descriptor-owning API flagged.
+    /// Listed explicitly so a future narrowing of that arm cannot quietly drop
+    /// the guarantee the pass exists for.
+    #[test]
+    fn keeps_socket_owning_std_net_paths_blocking() {
+        for path in [
+            "std::net::TcpStream::connect",
+            "std::net::TcpStream::connect_timeout",
+            "std::net::TcpStream::peek",
+            "std::net::TcpStream::local_addr",
+            "std::net::TcpStream::set_nodelay",
+            "std::net::TcpListener::bind",
+            "std::net::TcpListener::accept",
+            "std::net::TcpListener::incoming",
+            "std::net::UdpSocket::bind",
+            "std::net::UdpSocket::recv_from",
+            "std::net::UdpSocket::send_to",
+            "std::net::ToSocketAddrs::to_socket_addrs",
+        ] {
+            assert!(is_blocking_path(path), "must stay blocking: {path}");
+        }
+    }
+
+    /// Address *values* carry no socket, so their accessors are not blocking
+    /// calls. Before this exemption the coarse `std::net::` prefix flagged
+    /// `addr.port()` next to a `tokio::net::TcpListener::bind`, which is a pure
+    /// field read.
+    #[test]
+    fn exempts_std_net_address_value_accessors() {
+        for path in [
+            "std::net::SocketAddr::port",
+            "std::net::SocketAddr::ip",
+            "std::net::SocketAddr::set_port",
+            "std::net::SocketAddr::is_ipv4",
+            "std::net::SocketAddrV4::new",
+            "std::net::SocketAddrV6::flowinfo",
+            "std::net::IpAddr::is_loopback",
+            "std::net::Ipv4Addr::octets",
+            "std::net::Ipv6Addr::to_ipv4_mapped",
+        ] {
+            assert!(!is_blocking_path(path), "must not be blocking: {path}");
+        }
+    }
+
+    /// The exemption matches whole type segments only: a longer type name that
+    /// merely starts with an exempted one must not inherit the exemption.
+    #[test]
+    fn address_value_exemption_matches_whole_type_segments() {
+        assert!(!is_non_blocking_net_value_path("std::net::SocketAddr"));
+        assert!(!is_non_blocking_net_value_path(
+            "std::net::IpAddrStream::recv"
+        ));
+        assert!(is_non_blocking_net_value_path("std::net::SocketAddrV4::ip"));
+        assert!(is_blocking_path("std::net::IpAddrStream::recv"));
     }
 
     #[test]
