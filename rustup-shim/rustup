@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-toolchain="${RUST_LINTS_RUSTUP_TOOLCHAIN:-nightly-2026-04-16-x86_64-unknown-linux-gnu}"
+toolchain="${RUST_LINTS_RUSTUP_TOOLCHAIN:?RUST_LINTS_RUSTUP_TOOLCHAIN is not set}"
 
 case "${1:-}" in
   show)

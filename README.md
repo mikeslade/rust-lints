@@ -36,14 +36,22 @@ dylint-check:
     cargo dylint --all -- --workspace
 ```
 
-The library links against a pinned `rustc_private` nightly (see
-`rust-toolchain`); the flake builds it hermetically via crane and exposes:
+The library targets a rolling `rustc_private` nightly. `rust-toolchain` selects
+`nightly` for rustup users; the flake independently selects the newest nightly
+with all required components in the locked rust-overlay snapshot, builds it
+hermetically via crane, and exposes:
 
 - `packages.default` (alias `packages.dylints`) — the cdylib with the
   toolchain-suffixed symlink `cargo dylint --no-build` resolves
-- `packages.toolchain` — the pinned nightly, for building via a local shim
+- `packages.toolchain` — the resolved nightly, for building via a local shim
 - `devShells.default` — toolchain + cargo-dylint + dylint-link
   (`direnv allow` loads it automatically via the checked-in `.envrc`)
+
+The flake derives an exact dated toolchain name from that rolling selection for
+the cdylib suffix and `RUSTUP_TOOLCHAIN`. Consuming shims must report that same
+name so Dylint neither misses the library nor reuses a driver from another
+nightly. The date-free `rust-toolchain` entry is for editors and general rustup
+commands; run Dylint through the Nix shell, which supplies the exact identity.
 
 ## Fixtures
 

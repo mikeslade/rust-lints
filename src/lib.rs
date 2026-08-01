@@ -24,7 +24,9 @@
 
 extern crate rustc_errors;
 extern crate rustc_hir;
+extern crate rustc_lint;
 extern crate rustc_middle;
+extern crate rustc_session;
 extern crate rustc_span;
 
 use std::collections::BTreeSet;
@@ -44,7 +46,9 @@ use rustc_lint::{LateContext, LateLintPass, LintContext};
 use rustc_middle::ty;
 use rustc_span::{DUMMY_SP, FileName, Span};
 
-dylint_linting::declare_late_lint! {
+dylint_linting::dylint_library!();
+
+rustc_session::declare_lint! {
     /// ### What it does
     ///
     /// Enforces repository architecture policy shared across consuming projects.
@@ -59,6 +63,15 @@ dylint_linting::declare_late_lint! {
     pub RUST_LINTS_POLICY_CHECKS,
     Warn,
     "enforces shared Rust architecture policy checks"
+}
+
+rustc_session::declare_lint_pass!(RustLintsPolicyChecks => [RUST_LINTS_POLICY_CHECKS]);
+
+#[unsafe(no_mangle)]
+pub fn register_lints(sess: &rustc_session::Session, lint_store: &mut rustc_lint::LintStore) {
+    dylint_linting::init_config(sess);
+    lint_store.register_lints(&[RUST_LINTS_POLICY_CHECKS]);
+    lint_store.register_late_lint_pass(Box::new(|_| Box::new(RustLintsPolicyChecks)));
 }
 
 /// Generic configuration contract.
@@ -1393,7 +1406,9 @@ mod tests {
         assert!(!contains_sqlx_boundary_token(
             "let note = r#\"emitted alongside sqlx::query in the writer\"#;"
         ));
-        assert!(!contains_sqlx_boundary_token("// this row reaches no PgPool"));
+        assert!(!contains_sqlx_boundary_token(
+            "// this row reaches no PgPool"
+        ));
         assert!(!contains_sqlx_boundary_token(
             "let n = 1; /* PgPool lives in platform-db */ let m = 2;"
         ));

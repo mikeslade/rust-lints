@@ -23,15 +23,23 @@
       overlays = [(import rust-overlay)];
     };
 
-    # Pinned nightly that exposes rustc_private, matching rust-toolchain. Must
-    # carry rust-src + rustc-dev so the rustc_private extern crates resolve,
-    # and llvm-tools-preview for the linker dylint_linking drives.
-    toolchainDate = "2026-04-16";
+    # Select the newest nightly in the locked rust-overlay snapshot that carries
+    # every required component. Updating flake.lock rolls this forward; the lock
+    # keeps the selected toolchain reproducible between updates.
     rustcTarget = pkgs.stdenv.hostPlatform.rust.rustcTarget;
+    rustToolchain = pkgs.rust-bin.selectLatestNightlyWith (toolchain:
+      toolchain.default.override {
+        extensions = ["rust-src" "rustc-dev" "llvm-tools-preview"];
+      });
+    toolchainDateMatch =
+      builtins.match ".*-nightly-([0-9]{4}-[0-9]{2}-[0-9]{2})" rustToolchain.version;
+    toolchainDate =
+      if toolchainDateMatch == null
+      then throw "could not derive nightly date from ${rustToolchain.version}"
+      else builtins.head toolchainDateMatch;
+    # Dylint caches a rustc-private driver by this name, so retain the exact
+    # resolved date even though toolchain selection itself is rolling.
     toolchainName = "nightly-${toolchainDate}-${rustcTarget}";
-    rustToolchain = pkgs.rust-bin.nightly.${toolchainDate}.default.override {
-      extensions = ["rust-src" "rustc-dev" "llvm-tools-preview"];
-    };
 
     # Crane vendors the crate's dependencies as a fixed-output derivation, so
     # the cdylib build runs offline inside the Nix sandbox.
@@ -53,16 +61,16 @@
     cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
     # cargo-dylint and dylint-link are not packaged in nixpkgs, so the
-    # devshell builds them with the same pinned toolchain. Built from the
+    # devshell builds them with the same resolved toolchain. Built from the
     # dylint repo rather than crates.io: dylint's build.rs packages the
     # sibling `driver/` directory, which the crates.io tarball omits.
     # Version matches the dylint_linting pin in Cargo.lock.
-    dylintToolsVersion = "6.0.1";
+    dylintToolsVersion = "6.0.2";
     dylintToolsSrc = pkgs.fetchFromGitHub {
       owner = "trailofbits";
       repo = "dylint";
       rev = "v${dylintToolsVersion}";
-      hash = "sha256-SteI8+BZ5ej38goCOD+PRJozt7qVSTp/IFJXyeBblAw=";
+      hash = "sha256-cAN2eXOlWcmhD4co+8Wo7zEfwPnIF+RKoexdvpCRcrc=";
     };
     dylintToolsArgs = {
       pname = "dylint-tools";
@@ -116,7 +124,13 @@
       toolchain = rustToolchain;
     };
 
-    checks.${system}.build = dylintLib;
+    checks.${system} = {
+      build = dylintLib;
+      exact-toolchain-identity = pkgs.runCommand "rust-lints-exact-toolchain-identity" {} ''
+        test -L "${dylintLib}/lib/librust_lints@${toolchainName}.so"
+        touch "$out"
+      '';
+    };
 
     devShells.${system}.default = pkgs.mkShell {
       packages = [rustToolchain cargoDylint dylintLink];
@@ -128,6 +142,7 @@
       # No rustup in the shell: dylint-link and `cargo dylint` resolve the
       # toolchain via RUSTUP_TOOLCHAIN and the rustup-shim wrappers.
       RUSTUP_TOOLCHAIN = toolchainName;
+      RUST_LINTS_RUSTUP_TOOLCHAIN = toolchainName;
       RUST_LINTS_CARGO = "${rustToolchain}/bin/cargo";
       RUST_LINTS_RUSTC = "${rustToolchain}/bin/rustc";
       RUST_LINTS_RUSTDOC = "${rustToolchain}/bin/rustdoc";
