@@ -1,3 +1,5 @@
 [toolchain]
+# Intentionally rolling for rustup/editor use. Run Dylint through the Nix shell,
+# which derives an exact dated identity to keep its rustc-private driver cache safe.
 channel = "nightly"
 components = ["llvm-tools-preview", "rustc-dev"]
