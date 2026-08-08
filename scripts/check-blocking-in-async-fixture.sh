@@ -28,6 +28,11 @@ fi
 # reads exactly like "the pass found no violations". Always lint from cold.
 fixture_target="$work/target"
 
+# The pass runs in WARN mode here, so a violation is not an error and the run
+# must succeed. Its status is captured rather than discarded: a run that emitted
+# every expected diagnostic and then died — a rustc ICE, a link failure, ENOSPC
+# — leaves a log that parses exactly like a clean one.
+run_status=0
 (
     cd "$fixtures"
     CARGO_TARGET_DIR="$fixture_target" \
@@ -35,7 +40,13 @@ fixture_target="$work/target"
     DYLINT_LIBRARY_PATH="$lib" \
     RUST_LINTS_BLOCKING_TOKIO=1 \
         cargo dylint --all -- --workspace
-) >"$work/run.log" 2>&1 || true
+) >"$work/run.log" 2>&1 || run_status=$?
+
+if [ "$run_status" -ne 0 ]; then
+    echo "FAIL: the lint run exited $run_status; its diagnostics cannot be trusted." >&2
+    tail -30 "$work/run.log" >&2
+    exit 1
+fi
 
 if ! grep -q 'Checking fixture-product-async' "$work/run.log"; then
     echo "FAIL: the fixture workspace was not compiled, so the pass never ran." >&2
