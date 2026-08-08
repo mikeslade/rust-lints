@@ -15,14 +15,14 @@ pub fn direct_http_client() {
 
 pub fn blocking_call_inside_async_context() {
     let _future = async {
-        let _contents = std::fs::read_to_string("synthetic-fixture.txt");
+        let _contents = std::fs::read_to_string("synthetic-fixture.txt"); // blocking-in-async: expect
     };
 }
 
 // VIOLATION: synchronous socket I/O on an async worker thread.
 pub fn blocking_socket_inside_async_context(addr: std::net::SocketAddr) {
     let _future = async move {
-        let _stream = std::net::TcpStream::connect(addr);
+        let _stream = std::net::TcpStream::connect(addr); // blocking-in-async: expect
     };
 }
 
@@ -30,7 +30,7 @@ pub fn blocking_socket_inside_async_context(addr: std::net::SocketAddr) {
 pub fn blocking_dns_inside_async_context(host: String) {
     let _future = async move {
         use std::net::ToSocketAddrs;
-        let _addrs = host.to_socket_addrs();
+        let _addrs = host.to_socket_addrs(); // blocking-in-async: expect
     };
 }
 

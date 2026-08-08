@@ -11,6 +11,10 @@ name = "fixture-policy-api"
 version = "0.1.0"
 
 [[package]]
+name = "fixture-product-async"
+version = "0.1.0"
+
+[[package]]
 name = "fixture-product-conversions"
 version = "0.1.0"
 

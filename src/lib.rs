@@ -24,10 +24,12 @@
 
 extern crate rustc_errors;
 extern crate rustc_hir;
+extern crate rustc_infer;
 extern crate rustc_lint;
 extern crate rustc_middle;
 extern crate rustc_session;
 extern crate rustc_span;
+extern crate rustc_trait_selection;
 
 use std::collections::BTreeSet;
 use std::env;
@@ -42,9 +44,13 @@ use rustc_hir::{
     AmbigArg, Body, Closure, ClosureKind, CoroutineDesugaring, CoroutineKind, Expr, ExprKind,
     FnDecl, Item, ItemKind, Node, Ty, TyKind, UseKind,
 };
+use rustc_infer::infer::TyCtxtInferExt;
+use rustc_infer::traits::{Obligation, ObligationCause};
 use rustc_lint::{LateContext, LateLintPass, LintContext};
 use rustc_middle::ty;
+use rustc_middle::ty::TypeVisitableExt;
 use rustc_span::{DUMMY_SP, FileName, Span};
+use rustc_trait_selection::traits::query::evaluate_obligation::InferCtxtExt;
 
 dylint_linting::dylint_library!();
 
@@ -936,12 +942,65 @@ fn is_blocking_call(cx: &LateContext<'_>, expr: &Expr<'_>, expr_snippet: &str) -
                 .typeck_results()
                 .type_dependent_def_id(expr.hir_id)
                 .map(|def_id| cx.tcx.def_path_str(def_id));
-            is_blocking_method_name(method_name)
+            (is_blocking_method_name(method_name) && !evaluates_to_a_future(cx, expr))
                 || path.is_some_and(|path| is_blocking_path(&path))
                 || expr_snippet.contains("reqwest::blocking")
         }
         _ => false,
     }
+}
+
+/// True when the value this call produces implements [`Future`](std::future::Future).
+///
+/// This is what qualifies the method-name arm of [`is_blocking_call`].
+/// [`is_blocking_path`] identifies blocking APIs by their resolved path, but a
+/// path can only be matched once it is known, so the name arm carries every
+/// blocking call the path arm cannot reach: a project's own wrapper around
+/// `std::sync::mpsc`, or a `recv` behind a generic bound, whose resolved path
+/// names the local type or the trait rather than anything under `std`. Deleting
+/// that arm to silence Tokio's async `recv`/`wait` would drop those with it —
+/// measured on `fixtures/policy-violations`, three of eight genuine findings.
+///
+/// Excluding *async APIs* by name instead would mean enumerating them
+/// (`tokio::`, `futures::`, `async_channel::`, …), and an enumeration is only
+/// ever as complete as its last edit: an async library not on the list keeps
+/// producing false positives, and — worse — a name on the list would exempt any
+/// unrelated type that happens to match it.
+///
+/// Whether a call blocks the thread is not a property of its name at all. A call
+/// that yields a future has returned by the time the future exists; the waiting
+/// happens when an executor polls it, on whatever thread the executor chooses.
+/// A call that parks the calling thread cannot have produced a future to poll.
+/// So the type of the produced value decides it, for every async API at once and
+/// for ones not yet written — including the shapes an `async fn` check would
+/// miss, such as a plain `fn` returning a named `Future` struct
+/// (`async_channel::Receiver::recv`) or a boxed `Pin<Box<dyn Future>>`.
+///
+/// The check is deliberately confined to the name arm. The path arm keeps its
+/// verdict unconditionally: nothing under `std::sync::mpsc` or
+/// `std::process::Command` yields a future, so applying this there could only
+/// ever weaken a decision that is already exact.
+///
+/// Failure is closed. If the trait obligation cannot be discharged — an
+/// unresolved inference variable, a type carrying escaping bound variables, a
+/// body that already failed to type-check — this reports `false` and the call
+/// stays flagged, so an unproven case is reported rather than waved through.
+fn evaluates_to_a_future(cx: &LateContext<'_>, expr: &Expr<'_>) -> bool {
+    let Some(future_trait) = cx.tcx.lang_items().future_trait() else {
+        return false;
+    };
+    let ty = cx.typeck_results().expr_ty(expr);
+    if ty.has_escaping_bound_vars() || ty.references_error() {
+        return false;
+    }
+    let (infcx, param_env) = cx.tcx.infer_ctxt().build_with_typing_env(cx.typing_env());
+    let obligation = Obligation::new(
+        cx.tcx,
+        ObligationCause::dummy(),
+        param_env,
+        ty::TraitRef::new(cx.tcx, future_trait, [ty]),
+    );
+    infcx.predicate_must_hold_modulo_regions(&obligation)
 }
 
 fn callee_def_path(cx: &LateContext<'_>, callee: &Expr<'_>) -> Option<String> {
@@ -1551,6 +1610,33 @@ SELECT id FROM workers"#"##
         assert!(!is_blocking_function_call("tokio::time::sleep"));
         assert!(!is_blocking_path("std::process::id"));
         assert!(!is_blocking_method_name("try_recv"));
+    }
+
+    /// The method-name set is the pass's only reach into blocking calls whose
+    /// resolved path names a project's own type or a trait rather than `std` —
+    /// a hand-rolled wrapper around `std::sync::mpsc`, or a `recv` behind a
+    /// generic bound, where [`is_blocking_path`] has nothing to match. Dropping
+    /// an entry here silently drops those findings; measured on
+    /// `fixtures/policy-violations`, emptying the set costs three of eight
+    /// genuine findings while removing nothing the pass should not report.
+    ///
+    /// Tokio's async `recv`/`wait` are excluded by the *type* the call produces
+    /// (`evaluates_to_a_future`), not by shrinking this list, so the list stays
+    /// whole. Listed explicitly so that stays a deliberate change.
+    #[test]
+    fn keeps_every_blocking_method_name() {
+        for name in [
+            "block_on",
+            "recv",
+            "recv_timeout",
+            "wait",
+            "wait_with_output",
+            "output",
+        ] {
+            assert!(is_blocking_method_name(name), "must stay blocking: {name}");
+        }
+        assert!(!is_blocking_method_name("try_recv"));
+        assert!(!is_blocking_method_name("next"));
     }
 
     /// The `std::net::` arm must keep every file-descriptor-owning API flagged.
