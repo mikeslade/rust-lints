@@ -8,7 +8,10 @@ library — the mechanical enforcement for rules Clippy cannot express:
 - **Outbound-HTTP wrapper** — HTTP goes through the reviewed wrapper crate,
   not a raw client (`RUST_LINTS_HTTP_WRAPPER=1`).
 - **Blocking-in-async quarantine** — blocking calls in async contexts get
-  flagged for `spawn_blocking` (`RUST_LINTS_BLOCKING_TOKIO=1`).
+  flagged for `spawn_blocking` (`RUST_LINTS_BLOCKING_TOKIO=1`). A call is
+  blocking by its resolved path, or by its method name when the value it
+  produces is not a `Future` — so a project's own wrapper around
+  `std::sync::mpsc` is caught while Tokio's async `recv`/`wait` are not.
 - **Silent saturation** — `saturating_*` arithmetic needs a documented
   business rule (`RUST_LINTS_SILENT_SATURATION=1`).
 - **Unbounded channels** — `RUST_LINTS_UNBOUNDED_CHANNEL=1`.
@@ -64,3 +67,15 @@ nix develop -c bash -c 'cd fixtures/policy-violations && \
   RUST_LINTS_MAX_FILE_LINES=100 RUST_LINTS_REQUIRE_SQL_MARKER=1 \
   cargo dylint --all -- --workspace'
 ```
+
+The blocking-in-async cases are asserted rather than eyeballed:
+
+```bash
+nix develop -c scripts/check-blocking-in-async-fixture.sh
+```
+
+Each fixture line that must be flagged carries a trailing
+`// blocking-in-async: expect` marker, and the script set-diffs the markers
+against what the pass actually reported, in both directions. A change that
+removes a false positive by removing coverage fails it as loudly as one that
+introduces a false positive.

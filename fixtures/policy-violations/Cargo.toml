@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "apps/policy-api",
+  "crates/product-async",
   "crates/product-core",
   "crates/db-seam",
   "crates/product-integration",
