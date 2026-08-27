@@ -54,7 +54,11 @@ use rustc_trait_selection::traits::query::evaluate_obligation::InferCtxtExt;
 
 dylint_linting::dylint_library!();
 
-rustc_session::declare_lint! {
+// `declare_lint!` / `declare_lint_pass!` are defined in `rustc_lint_defs` and
+// re-exported by `rustc_lint`. They were reachable through `rustc_session` until
+// nightly-2026-08-26 dropped that re-export; `rustc_lint` is already an extern
+// crate here, so this needs no new dependency.
+rustc_lint::declare_lint! {
     /// ### What it does
     ///
     /// Enforces repository architecture policy shared across consuming projects.
@@ -71,7 +75,7 @@ rustc_session::declare_lint! {
     "enforces shared Rust architecture policy checks"
 }
 
-rustc_session::declare_lint_pass!(RustLintsPolicyChecks => [RUST_LINTS_POLICY_CHECKS]);
+rustc_lint::declare_lint_pass!(RustLintsPolicyChecks => [RUST_LINTS_POLICY_CHECKS]);
 
 #[unsafe(no_mangle)]
 pub fn register_lints(sess: &rustc_session::Session, lint_store: &mut rustc_lint::LintStore) {
