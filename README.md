@@ -19,6 +19,20 @@ library — the mechanical enforcement for rules Clippy cannot express:
 - **File-length ratchet** — `RUST_LINTS_MAX_FILE_LINES=<n>`, with a
   `rust-lints-file-length-exception` marker escape hatch
   (see `file-length-exceptions.tsv`).
+- **Closed-trait impls** — one nominated trait may only be implemented by the
+  types named in an allowed set (`RUST_LINTS_CLOSED_TRAIT_IMPLS=my_crate::Trait`,
+  `RUST_LINTS_CLOSED_TRAIT_ALLOWED_IMPLS=my_crate::A,my_crate::B`). Membership is
+  decided on the resolved `DefId` of the trait ref and of the self type's ADT, so
+  a nested generic bound, an import alias, a re-export and a `macro_rules!`
+  expansion all arrive as the same two nodes. No source text is read.
+
+  **What it holds, and what it does not.** Dylint visits only the crates the
+  compilation builds, so an implementation in a crate outside the linted
+  workspace is never presented to the pass and is never reported. What this pass
+  establishes is *no implementation inside the linted workspace outside the
+  allowed set*. A project whose trait is public and unsealed still has a foreign
+  implementation open to it, and should say so where it states the trait's
+  guarantee rather than calling the trait closed.
 
 All passes are gated/configured by `RUST_LINTS_*` env vars; suppress a
 finding in code with `#[allow(rust_lints_policy_checks)]` plus a reason.
@@ -79,3 +93,16 @@ Each fixture line that must be flagged carries a trailing
 against what the pass actually reported, in both directions. A change that
 removes a false positive by removing coverage fails it as loudly as one that
 introduces a false positive.
+
+The closed-trait cases are asserted the same way:
+
+```bash
+nix develop -c scripts/check-closed-trait-impl-fixture.sh
+```
+
+Its marker is `// closed-trait-impl: expect`. The fixtures spell one trait three
+ways a regex over `impl` headers cannot follow: a bound carrying nested angle
+brackets, an import alias, and an impl that exists only after macro expansion.
+A pass that stopped resolving `DefId`s reads as lost coverage. A fourth
+implementor sits in the allowed set carrying no marker, so a pass that dropped
+the allowed-set filter and began flagging every impl reads as a false positive.

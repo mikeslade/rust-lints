@@ -44,3 +44,54 @@ pub fn address_value_accessors_inside_async_context(addr: std::net::SocketAddr) 
         let _v4 = addr.is_ipv4();
     };
 }
+
+// The closed-trait cases. Each is an implementation of the same trait, spelled a
+// different way; the pass sees one `DefId` for all of them. Every line that must
+// be flagged carries a trailing closed-trait-impl expect marker, and
+// scripts/check-closed-trait-impl-fixture.sh set-diffs those markers against
+// what the pass reports, in both directions.
+
+use fixture_product_core::OutboxRepository;
+use fixture_product_core::OutboxRepository as AliasedRepository;
+use fixture_product_core::RenderedPayload;
+
+pub struct GenericWriter<T> {
+    pub source: T,
+}
+
+// VIOLATION: nested angle brackets in the generic bound. The regex inventory
+// this pass replaced could not span them and reported nothing here.
+impl<T: Iterator<Item = Vec<u8>> + Send + Sync> OutboxRepository for GenericWriter<T> { // closed-trait-impl: expect
+    fn store(&self, _payload: &RenderedPayload) {}
+}
+
+pub struct AliasedWriter;
+
+// VIOLATION: the trait is named through an import alias, so no textual search
+// for the trait's own name finds this impl.
+impl AliasedRepository for AliasedWriter { // closed-trait-impl: expect
+    fn store(&self, _payload: &RenderedPayload) {}
+}
+
+macro_rules! outbox_writer {
+    ($name:ident) => {
+        pub struct $name;
+
+        // VIOLATION: the impl header exists only after expansion.
+        impl OutboxRepository for $name { // closed-trait-impl: expect
+            fn store(&self, _payload: &RenderedPayload) {}
+        }
+    };
+}
+
+outbox_writer!(MacroWriter);
+
+pub struct ReviewedWriter;
+
+// COMPLIANT: named in the allowed set the fixture script passes, so it carries
+// no marker and must not be reported. Removing the allowed-set filter turns this
+// line into a false positive, which is how the script catches a pass that has
+// widened into "flag every impl".
+impl OutboxRepository for ReviewedWriter {
+    fn store(&self, _payload: &RenderedPayload) {}
+}
