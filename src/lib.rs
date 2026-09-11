@@ -16,6 +16,8 @@
 //!    swallowed by the `unwrap_or` family silently corrupts a persisted value.
 //! 6. Unbounded channel: a channel constructor with no backpressure bound.
 //! 7. Boolean parameter on a public fn: blind at call sites; use a named enum.
+//! 8. Closed-trait impls: a nominated trait may only be implemented by the
+//!    types named in an allowed set, decided on resolved `DefId`s.
 //!
 //! Everything that used to be hardcoded per project (seam crate names, fixture
 //! path prefix, repo source roots, exception-marker keyword, message wording) is
@@ -38,7 +40,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use rustc_errors::{Diag, Diagnostic, EmissionGuarantee, Level, MultiSpan};
-use rustc_hir::def_id::LocalDefId;
+use rustc_hir::def_id::{DefId, LocalDefId};
 use rustc_hir::intravisit::FnKind;
 use rustc_hir::{
     AmbigArg, Body, Closure, ClosureKind, CoroutineDesugaring, CoroutineKind, Expr, ExprKind,
@@ -140,6 +142,25 @@ mod config {
         env::var_os("RUST_LINTS_BOOL_PARAMS").is_some()
     }
 
+    /// `RUST_LINTS_CLOSED_TRAIT_IMPLS`: the fully qualified path of one trait
+    /// whose implementations are restricted to an allowed set, crate-qualified
+    /// (`integration_engine::OutboxRepository`). Unset disables the pass; there
+    /// is no default trait.
+    pub fn closed_trait_path() -> Option<String> {
+        env::var("RUST_LINTS_CLOSED_TRAIT_IMPLS")
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+    }
+
+    /// `RUST_LINTS_CLOSED_TRAIT_ALLOWED_IMPLS`: comma-separated fully qualified
+    /// crate-qualified paths of the self types allowed to implement that trait,
+    /// without generic arguments (`fixture_product_integration::ReviewedWriter`).
+    /// Unset means every implementation the pass sees is reported.
+    pub fn closed_trait_allowed_impls() -> Vec<String> {
+        list_var("RUST_LINTS_CLOSED_TRAIT_ALLOWED_IMPLS").unwrap_or_default()
+    }
+
     /// `RUST_LINTS_LABEL`: free-text platform label woven into messages
     /// (e.g. "orders platform"). Default: "platform".
     pub fn label() -> String {
@@ -237,6 +258,7 @@ impl<'tcx> LateLintPass<'tcx> for RustLintsPolicyChecks {
         let snippet = snippet(cx, item.span);
 
         check_wildcard_import(cx, item);
+        check_closed_trait_impl(cx, item);
         check_sqlx_boundary(cx, item.span, &snippet);
     }
 
@@ -355,6 +377,96 @@ fn check_file_lengths(cx: &LateContext<'_>) {
             ),
         );
     }
+}
+
+/// Reports an implementation of a nominated trait by a type outside the allowed
+/// set.
+///
+/// The question is asked of the compiler, not of the source text. An impl's
+/// resolved trait ref carries the trait's `DefId` and its self type carries the
+/// ADT's `DefId`, so a nested generic bound, an aliased import, a re-export and
+/// a `macro_rules!` expansion all arrive here as the same two nodes. There is no
+/// `impl` header to parse and nothing this pass can be made to miss by rewriting
+/// the way an impl is spelled.
+///
+/// ### What this does not hold
+///
+/// Dylint only visits the crates the compilation builds. An implementation in a
+/// crate outside the linted workspace is never presented to this pass, so it is
+/// never reported. What the pass establishes is "no implementation inside the
+/// linted workspace outside the allowed set". A genuinely foreign implementation
+/// stays open, and a consuming project must say so where it states the trait's
+/// guarantee rather than calling the trait closed.
+fn check_closed_trait_impl(cx: &LateContext<'_>, item: &Item<'_>) {
+    let Some(closed_trait) = config::closed_trait_path() else {
+        return;
+    };
+    let ItemKind::Impl(impl_item) = item.kind else {
+        return;
+    };
+    // An inherent impl has no trait ref to ask for; `impl_trait_ref` is only
+    // meaningful once HIR says a trait is being implemented.
+    if impl_item.of_trait.is_none() {
+        return;
+    }
+    let trait_ref = cx.tcx.impl_trait_ref(item.owner_id.def_id).skip_binder();
+    if crate_qualified_path(cx, trait_ref.def_id) != closed_trait {
+        return;
+    }
+
+    let self_path = trait_ref
+        .self_ty()
+        .ty_adt_def()
+        .map(|adt| crate_qualified_path(cx, adt.did()));
+
+    if self_path.as_deref().is_some_and(|path| {
+        closed_trait_impl_is_allowed(path, &config::closed_trait_allowed_impls())
+    }) {
+        return;
+    }
+
+    let implementor = self_path.unwrap_or_else(|| "this type".to_owned());
+    emit(
+        cx,
+        item.span,
+        format!(
+            "`{closed_trait}` is implemented by `{implementor}`, which is not in the allowed set"
+        ),
+        format!(
+            "write through one of the reviewed implementors, or add `{implementor}` to \
+             RUST_LINTS_CLOSED_TRAIT_ALLOWED_IMPLS once it has had the review the closed set exists to force"
+        ),
+    );
+}
+
+/// Renders a `DefId` as a crate-qualified path.
+///
+/// `def_path_str` leaves the crate name off items in the crate currently being
+/// compiled, so one type prints as `ReviewedWriter` while its own crate is
+/// linted and as `fixture_product_integration::ReviewedWriter` from anywhere
+/// else. A configured allowed set has to name one thing, and the crate name is
+/// the half that makes the name unambiguous, so it is always put back. Without
+/// this an entry either misses every local implementor or — written bare to
+/// match them — covers a same-named type in any crate at all.
+fn crate_qualified_path(cx: &LateContext<'_>, def_id: DefId) -> String {
+    let path = cx.tcx.def_path_str(def_id);
+    if def_id.is_local() {
+        format!("{}::{path}", cx.tcx.crate_name(def_id.krate))
+    } else {
+        path
+    }
+}
+
+/// Decides membership of the allowed set by resolved path equality.
+///
+/// The value compared is the self type's ADT def path, so `GenericWriter<T>`
+/// arrives as `fixture_product_integration::GenericWriter` with its generic
+/// arguments already gone, and a type of the same name in another crate arrives
+/// under that crate's own path. Comparing the written snippet instead would fail
+/// the first and accept the second, which is the pair of mistakes this pass
+/// exists to avoid.
+fn closed_trait_impl_is_allowed(self_path: &str, allowed: &[String]) -> bool {
+    allowed.iter().any(|entry| entry == self_path)
 }
 
 fn check_wildcard_import(cx: &LateContext<'_>, item: &Item<'_>) {
@@ -1435,7 +1547,8 @@ impl<'a, G: EmissionGuarantee> Diagnostic<'a, G> for RustLintsPolicyDiag {
 #[cfg(test)]
 mod tests {
     use super::{
-        config, contains_direct_reqwest_client, contains_dynamic_sql_argument,
+        closed_trait_impl_is_allowed, config, contains_direct_reqwest_client,
+        contains_dynamic_sql_argument,
         contains_inline_sql_text, contains_sqlx_boundary_token, contains_static_sql_literal,
         has_inline_file_length_exception_with_marker, inventory_lists_path,
         is_blocking_function_call, is_blocking_method_name, is_blocking_path,
@@ -1792,5 +1905,38 @@ SELECT id FROM workers"#"##
         assert!(!config::sqlx_owner_paths().is_empty());
         assert!(!config::http_owner_paths().is_empty());
         assert!(!config::repo_source_roots().is_empty());
+    }
+
+    #[test]
+    fn allowed_set_is_decided_on_resolved_paths() {
+        let allowed = vec!["fixture_product_integration::GenericWriter".to_owned()];
+
+        // The self type is written `GenericWriter<T>`. Its ADT def path carries
+        // no generic arguments, so the allowed entry matches it.
+        assert!(closed_trait_impl_is_allowed(
+            "fixture_product_integration::GenericWriter",
+            &allowed
+        ));
+
+        // A type of the same name in another crate is a different type and is
+        // not covered by the entry.
+        assert!(!closed_trait_impl_is_allowed(
+            "other_vendor::GenericWriter",
+            &allowed
+        ));
+
+        // What a snippet comparison would hand in. It never matches, which is
+        // why the pass hands in a def path instead.
+        assert!(!closed_trait_impl_is_allowed("GenericWriter<T>", &allowed));
+    }
+
+    #[test]
+    fn closed_trait_pass_is_off_until_a_trait_is_named() {
+        // SAFETY: tests are single-threaded; the default-off contract is what
+        // this asserts.
+        unsafe {
+            std::env::remove_var("RUST_LINTS_CLOSED_TRAIT_IMPLS");
+        }
+        assert!(config::closed_trait_path().is_none());
     }
 }

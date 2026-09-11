@@ -25,6 +25,9 @@ version = "0.1.0"
 [[package]]
 name = "fixture-product-integration"
 version = "0.1.0"
+dependencies = [
+ "fixture-product-core",
+]
 
 [[package]]
 name = "fixture-product-long-file"
