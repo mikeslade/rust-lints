@@ -148,7 +148,7 @@
     # A consumer that pins its own nightly builds the library against THAT
     # nightly instead of inheriting this flake's rolling choice:
     #
-    #   inputs.rust-lints.lib.dylintsFor { date = "2026-08-26"; }
+    #   inputs.rust-lints.lib.dylintsFor { date = "2026-09-26"; }
     #
     # or, if it already has a toolchain derivation with the rustc_private
     # extensions, `dylintsFor { rustToolchain = ...; }`. Either way the returned
@@ -184,12 +184,12 @@
       # this, a consumer passing its own pin could silently be handed the
       # default build back.
       supplied-toolchain-identity = let
-        supplied = buildFor (toolchainForDate "2026-08-26");
+        supplied = buildFor (toolchainForDate "2026-09-26");
       in
         pkgs.runCommand "rust-lints-supplied-toolchain-identity" {} ''
           test -L "${supplied.dylints}/lib/librust_lints@${supplied.toolchainName}.so"
           case "${supplied.toolchainName}" in
-            nightly-2026-08-26-*) ;;
+            nightly-2026-09-26-*) ;;
             *) echo "supplied toolchain resolved to ${supplied.toolchainName}" >&2; exit 1 ;;
           esac
           touch "$out"

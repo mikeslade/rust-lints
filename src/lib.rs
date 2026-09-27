@@ -37,12 +37,12 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-use rustc_errors::{Diag, Diagnostic, EmissionGuarantee, Level, MultiSpan};
+use rustc_errors::{Diag, Diagnostic, Level, MultiSpan};
 use rustc_hir::def_id::LocalDefId;
 use rustc_hir::intravisit::FnKind;
 use rustc_hir::{
     AmbigArg, Body, Closure, ClosureKind, CoroutineDesugaring, CoroutineKind, Expr, ExprKind,
-    FnDecl, Item, ItemKind, Node, Ty, TyKind, UseKind,
+    FnDecl, Item, ItemKind, Node, Ty, TyKind, UseKind, UseTree,
 };
 use rustc_infer::infer::TyCtxtInferExt;
 use rustc_infer::traits::{Obligation, ObligationCause};
@@ -358,16 +358,28 @@ fn check_file_lengths(cx: &LateContext<'_>) {
 }
 
 fn check_wildcard_import(cx: &LateContext<'_>, item: &Item<'_>) {
-    if !matches!(item.kind, ItemKind::Use(_, UseKind::Glob)) {
-        return;
+    if let ItemKind::Use(tree) = item.kind {
+        check_wildcard_use_tree(cx, item.span, &tree);
     }
+}
 
-    emit(
-        cx,
-        item.span,
-        "wildcard imports are not allowed".to_owned(),
-        "replace wildcard imports with explicitly named imports or re-exports".to_owned(),
-    );
+// HIR keeps a `use a::{b::*, c}` list as ONE item whose tree nests, rather than
+// lowering each element to an item of its own, so a glob can sit at any depth.
+fn check_wildcard_use_tree(cx: &LateContext<'_>, span: Span, tree: &UseTree<'_>) {
+    match tree.kind {
+        UseKind::Glob => emit(
+            cx,
+            span,
+            "wildcard imports are not allowed".to_owned(),
+            "replace wildcard imports with explicitly named imports or re-exports".to_owned(),
+        ),
+        UseKind::Single(_) => {}
+        UseKind::Nested { items } => {
+            for (nested, _, _) in items {
+                check_wildcard_use_tree(cx, nested.prefix.span, nested);
+            }
+        }
+    }
 }
 
 fn source_file_local_path(source_file: &rustc_span::SourceFile) -> Option<PathBuf> {
@@ -1424,8 +1436,8 @@ struct RustLintsPolicyDiag {
     help: String,
 }
 
-impl<'a, G: EmissionGuarantee> Diagnostic<'a, G> for RustLintsPolicyDiag {
-    fn into_diag(self, dcx: rustc_errors::DiagCtxtHandle<'a>, level: Level) -> Diag<'a, G> {
+impl<'a> Diagnostic<'a> for RustLintsPolicyDiag {
+    fn into_diag(self, dcx: rustc_errors::DiagCtxtHandle<'a>, level: Level) -> Diag<'a> {
         let mut diag = Diag::new(dcx, level, self.message);
         diag.help(self.help);
         diag
