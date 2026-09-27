@@ -632,7 +632,7 @@ fn receiver_is_fallible_conversion(receiver: &Expr<'_>) -> bool {
         }
         // `T::try_from(x)` / `<T as TryFrom<_>>::try_from(x)`.
         ExprKind::Call(callee, _) => {
-            last_path_segment(callee).is_some_and(|name| is_fallible_conversion_name(name))
+            last_path_segment(callee).is_some_and(is_fallible_conversion_name)
         }
         _ => false,
     }
