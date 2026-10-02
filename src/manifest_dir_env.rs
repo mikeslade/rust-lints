@@ -58,8 +58,11 @@ pub(crate) const VARIABLE: &str = "CARGO_MANIFEST_DIR";
 /// The diagnostic items `core` puts on its builtin `env!` and `option_env!`.
 const ENV_MACRO_ITEMS: &[&str] = &["env_macro", "option_env_macro"];
 
-/// How rustc's hygiene table names an expansion of the crate being compiled.
-const LOCAL_EXPANSION_PREFIX: &str = "crate0::{{expn";
+/// The first line of a [`debug_hygiene_data`] dump.
+const EXPANSIONS_HEADER: &str = "Expansions:";
+
+/// The index rustc's hygiene dump gives the crate being compiled (`LOCAL_CRATE`).
+const LOCAL_CRATE_INDEX: u32 = 0;
 
 /// What HIR still shows of one `env!`/`option_env!` expansion.
 #[derive(Default)]
@@ -204,58 +207,96 @@ fn local_expansions() -> Option<Vec<LocalExpnId>> {
 
 /// The number of local expansions in a [`debug_hygiene_data`] dump, root included.
 ///
-/// The dump lists the local expansions first, one line each, numbered from 0. Anything
-/// other than one unbroken run `0, 1, .., n - 1` means the format is not the one this
-/// parser knows, and the answer is `None`, never a short count.
+/// The dump opens with an `Expansions:` section that ends at the first blank line: one
+/// row per expansion, `crate<N>::{{expn<I>}}: ...`, the local crate's (`crate0`) first and
+/// numbered from 0, then the foreign ones. Every row of that section must parse, the
+/// local rows must be one unbroken run `0, 1, .., n - 1` ahead of any foreign row, and
+/// the section must end. Anything else means the format is not the one this parser
+/// knows, and the answer is `None`, never a short count: a row the parser skipped would
+/// be an expansion the pass never examined.
 fn local_expansion_count(dump: &str) -> Option<u32> {
+    let mut lines = dump.lines();
+    if lines.next()? != EXPANSIONS_HEADER {
+        return None;
+    }
     let mut count: u32 = 0;
-    for line in dump.lines() {
-        let Some(rest) = line.strip_prefix(LOCAL_EXPANSION_PREFIX) else {
+    let mut foreign_seen = false;
+    for line in lines {
+        if line.is_empty() {
+            return (count > 0).then_some(count);
+        }
+        let (krate, index) = expansion_row_id(line)?;
+        if krate != LOCAL_CRATE_INDEX {
+            foreign_seen = true;
             continue;
-        };
-        let index: u32 = rest.split_once("}}:")?.0.parse().ok()?;
-        if index != count {
+        }
+        if foreign_seen || index != count {
             return None;
         }
         count = count.checked_add(1)?;
     }
-    (count > 0).then_some(count)
+    // The section never ended: a truncated or reshaped dump.
+    None
+}
+
+/// The crate and expansion index of one `crate<N>::{{expn<I>}}: ...` row.
+fn expansion_row_id(line: &str) -> Option<(u32, u32)> {
+    let (id, _) = line.split_once(": ")?;
+    let (krate, expn) = id.split_once("::{{expn")?;
+    let krate = krate.strip_prefix("crate")?.parse().ok()?;
+    let index = expn.strip_suffix("}}")?.parse().ok()?;
+    Some((krate, index))
 }
 
 #[cfg(test)]
 mod tests {
     use super::local_expansion_count;
 
+    const ROWS: &str = "crate0::{{expn0}}: parent: crate0::{{expn0}}, call_site_ctxt: #0, def_site_ctxt: #0, kind: Root\n\
+        crate0::{{expn1}}: parent: crate0::{{expn0}}, call_site_ctxt: #0, def_site_ctxt: #0, kind: AstPass(StdImports)\n\
+        crate0::{{expn2}}: parent: crate0::{{expn0}}, call_site_ctxt: #0, def_site_ctxt: #0, kind: Macro(Bang, \"env\")\n";
+    const FOREIGN_ROW: &str = "crate1::{{expn1}}: parent: crate0::{{expn0}}, call_site_ctxt: #0, def_site_ctxt: #0, kind: AstPass(StdImports)\n";
+    const TAIL: &str =
+        "\nSyntaxContexts:\n#0: parent: #0, outer_mark: (crate0::{{expn0}}, Opaque)\n";
+
+    fn dump(rows: &str) -> String {
+        format!("Expansions:\n{rows}{TAIL}")
+    }
+
     #[test]
     fn counts_the_local_expansions_of_a_hygiene_dump() {
-        let dump = "Expansions:\n\
-            crate0::{{expn0}}: parent: crate0::{{expn0}}, call_site_ctxt: #0, def_site_ctxt: #0, kind: Root\n\
-            crate0::{{expn1}}: parent: crate0::{{expn0}}, call_site_ctxt: #0, def_site_ctxt: #0, kind: AstPass(StdImports)\n\
-            crate0::{{expn2}}: parent: crate0::{{expn0}}, call_site_ctxt: #0, def_site_ctxt: #0, kind: Macro(Bang, \"env\")\n\
-            crate1::{{expn1}}: parent: crate0::{{expn0}}, call_site_ctxt: #0, def_site_ctxt: #0, kind: AstPass(StdImports)\n\
-            \n\
-            SyntaxContexts:\n\
-            #0: parent: #0, outer_mark: (crate0::{{expn0}}, Opaque)\n";
-        assert_eq!(local_expansion_count(dump), Some(3));
+        assert_eq!(local_expansion_count(&dump(ROWS)), Some(3));
+        assert_eq!(
+            local_expansion_count(&dump(&format!("{ROWS}{FOREIGN_ROW}"))),
+            Some(3)
+        );
     }
 
     #[test]
     fn refuses_a_dump_it_cannot_read() {
-        // No local line at all: a changed format, not a crate with no expansions (the
-        // root expansion always exists).
+        // A readable prefix followed by a row in another format: skipping that row
+        // would hand back a short count and leave its expansion unexamined.
+        let reshaped = format!("{ROWS}crate0::ExpnId(3): kind: Macro(Bang, env)\n");
+        assert_eq!(local_expansion_count(&dump(&reshaped)), None);
+        // No local row at all: the root expansion always exists.
         assert_eq!(
-            local_expansion_count("Expansions:\nExpnId(0): Root\n"),
+            local_expansion_count(&dump("ExpnId(0): kind: Root\n")),
             None
         );
-        // A gap or a reordering would make the walk skip expansions.
-        assert_eq!(
-            local_expansion_count("crate0::{{expn0}}: kind: Root\ncrate0::{{expn2}}: kind: Root\n"),
-            None
-        );
+        assert_eq!(local_expansion_count(&dump("")), None);
+        // A gap would make the walk skip an expansion.
+        let gap = "crate0::{{expn0}}: kind: Root\ncrate0::{{expn2}}: kind: Root\n";
+        assert_eq!(local_expansion_count(&dump(gap)), None);
+        // A local row after a foreign one: the local rows are no longer one run.
+        let late = format!("{ROWS}{FOREIGN_ROW}crate0::{{{{expn3}}}}: kind: Root\n");
+        assert_eq!(local_expansion_count(&dump(&late)), None);
         // An index that does not parse.
         assert_eq!(
-            local_expansion_count("crate0::{{expnX}}: kind: Root\n"),
+            local_expansion_count(&dump("crate0::{{expnX}}: kind: Root\n")),
             None
         );
+        // No header, or no end to the section.
+        assert_eq!(local_expansion_count(ROWS), None);
+        assert_eq!(local_expansion_count(&format!("Expansions:\n{ROWS}")), None);
     }
 }
