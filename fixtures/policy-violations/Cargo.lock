@@ -33,6 +33,9 @@ version = "0.1.0"
 [[package]]
 name = "fixture-product-manifest-dir"
 version = "0.1.0"
+dependencies = [
+ "fixture-product-manifest-dir-clean",
+]
 
 [[package]]
 name = "fixture-product-manifest-dir-clean"

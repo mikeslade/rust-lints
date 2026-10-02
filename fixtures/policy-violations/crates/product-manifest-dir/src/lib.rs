@@ -127,6 +127,14 @@ pub mod in_macro_body {
     }
 }
 
+/// The read sits in a macro another crate exports. rustc drops a lint inside a foreign
+/// macro, so it is reported at the invocation here.
+pub mod foreign_macro {
+    pub fn read() -> &'static str {
+        fixture_product_manifest_dir_clean::manifest_dir!() // manifest-dir: expect
+    }
+}
+
 /// A call whose literal another builtin consumed: nothing is left to compare, and the
 /// crate reads the variable, so the call is refused.
 pub mod consumed {

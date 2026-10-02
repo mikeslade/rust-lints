@@ -19,3 +19,12 @@ pub const QUOTED: &str = stringify!(env!("CARGO_MANIFEST_DIR"));
 pub fn runtime() -> Option<OsString> {
     std::env::var_os("CARGO_MANIFEST_DIR")
 }
+
+/// Defining a macro that reads the variable reads nothing: only an expansion does.
+/// The crate that invokes it is refused, at the invocation.
+#[macro_export]
+macro_rules! manifest_dir {
+    () => {
+        env!("CARGO_MANIFEST_DIR")
+    };
+}

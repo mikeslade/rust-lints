@@ -57,7 +57,7 @@ if [ "$run_status" -ne 0 ]; then
 fi
 
 for crate in fixture-product-manifest-dir fixture-product-manifest-dir-clean; do
-    if ! grep -q "Checking $crate " "$work/run.log"; then
+    if ! grep -Eq "(Checking|Compiling) $crate " "$work/run.log"; then
         echo "FAIL: $crate was not compiled, so the pass never ran on it." >&2
         tail -30 "$work/run.log" >&2
         exit 1
