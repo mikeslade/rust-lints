@@ -16,6 +16,12 @@ library — the mechanical enforcement for rules Clippy cannot express:
   business rule (`RUST_LINTS_SILENT_SATURATION=1`).
 - **Unbounded channels** — `RUST_LINTS_UNBOUNDED_CHANNEL=1`.
 - **Boolean positional parameters** — `RUST_LINTS_BOOL_PARAMS=1`.
+- **Build-time `CARGO_MANIFEST_DIR` reads** — an `env!`/`option_env!` that
+  reads `CARGO_MANIFEST_DIR` bakes in the checkout the crate was compiled in
+  (`RUST_LINTS_BUILD_TIME_MANIFEST_DIR=1`). Judged after expansion: the macro
+  by the definition it resolved to, the variable by the name rustc recorded
+  reading, so a renamed `env` or a macro-built name changes nothing. Tests,
+  benches, examples and build scripts are all in scope.
 - **File-length ratchet** — `RUST_LINTS_MAX_FILE_LINES=<n>`, with a
   `rust-lints-file-length-exception` marker escape hatch
   (see `file-length-exceptions.tsv`).
@@ -36,6 +42,7 @@ dylint-check:
     RUST_LINTS_MAX_FILE_LINES=800 RUST_LINTS_REQUIRE_SQL_MARKER=1 RUST_LINTS_STRICT_SQLX=1 \
     RUST_LINTS_HTTP_WRAPPER=1 RUST_LINTS_BLOCKING_TOKIO=1 \
     RUST_LINTS_SILENT_SATURATION=1 RUST_LINTS_UNBOUNDED_CHANNEL=1 RUST_LINTS_BOOL_PARAMS=1 \
+    RUST_LINTS_BUILD_TIME_MANIFEST_DIR=1 \
     cargo dylint --all -- --workspace
 ```
 
@@ -79,3 +86,11 @@ Each fixture line that must be flagged carries a trailing
 against what the pass actually reported, in both directions. A change that
 removes a false positive by removing coverage fails it as loudly as one that
 introduces a false positive.
+
+The build-time `CARGO_MANIFEST_DIR` cases are asserted the same way, over every
+target (`--all-targets`), with `// manifest-dir: expect` and
+`// manifest-dir: expect-consumed` markers:
+
+```bash
+nix develop -c scripts/check-manifest-dir-fixture.sh
+```
