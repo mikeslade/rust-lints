@@ -16,12 +16,16 @@
 //!    swallowed by the `unwrap_or` family silently corrupts a persisted value.
 //! 6. Unbounded channel: a channel constructor with no backpressure bound.
 //! 7. Boolean parameter on a public fn: blind at call sites; use a named enum.
+//! 8. Build-time `CARGO_MANIFEST_DIR` read: an `env!`/`option_env!` that bakes the
+//!    checkout the crate was compiled in, judged after expansion (see
+//!    [`manifest_dir_env`]).
 //!
 //! Everything that used to be hardcoded per project (seam crate names, fixture
 //! path prefix, repo source roots, exception-marker keyword, message wording) is
 //! driven by `RUST_LINTS_*` environment variables with sensible defaults. See the
 //! [`config`] module for the full contract.
 
+extern crate rustc_ast;
 extern crate rustc_errors;
 extern crate rustc_hir;
 extern crate rustc_infer;
@@ -54,6 +58,8 @@ use rustc_trait_selection::traits::query::evaluate_obligation::InferCtxtExt;
 
 dylint_linting::dylint_library!();
 
+mod manifest_dir_env;
+
 // `declare_lint!` / `declare_lint_pass!` are defined in `rustc_lint_defs` and
 // re-exported by `rustc_lint`. They were reachable through `rustc_session` until
 // nightly-2026-08-26 dropped that re-export; `rustc_lint` is already an extern
@@ -75,20 +81,28 @@ rustc_lint::declare_lint! {
     "enforces shared Rust architecture policy checks"
 }
 
-rustc_lint::declare_lint_pass!(RustLintsPolicyChecks => [RUST_LINTS_POLICY_CHECKS]);
+/// The pass. Its one piece of state belongs to the build-time manifest-dir pass, which
+/// collects `env!` outputs while expressions are visited and judges them at the end.
+#[derive(Default)]
+struct RustLintsPolicyChecks {
+    manifest_dir_reads: manifest_dir_env::ManifestDirReads,
+}
+
+rustc_lint::impl_lint_pass!(RustLintsPolicyChecks => [RUST_LINTS_POLICY_CHECKS]);
 
 #[unsafe(no_mangle)]
 pub fn register_lints(sess: &rustc_session::Session, lint_store: &mut rustc_lint::LintStore) {
     dylint_linting::init_config(sess);
     lint_store.register_lints(&[RUST_LINTS_POLICY_CHECKS]);
-    lint_store.register_late_lint_pass(Box::new(|_| Box::new(RustLintsPolicyChecks)));
+    lint_store.register_late_lint_pass(Box::new(|_| Box::new(RustLintsPolicyChecks::default())));
 }
 
 /// Generic configuration contract.
 ///
 /// Every knob is an environment variable read at lint time. Feature gates
 /// (`HTTP_WRAPPER`, `BLOCKING_TOKIO`, `REQUIRE_SQL_MARKER`, `STRICT_SQLX`,
-/// `SILENT_SATURATION`, `UNBOUNDED_CHANNEL`, `BOOL_PARAMS`) are off unless their
+/// `SILENT_SATURATION`, `UNBOUNDED_CHANNEL`, `BOOL_PARAMS`,
+/// `BUILD_TIME_MANIFEST_DIR`) are off unless their
 /// variable is set to any value; the SQL-seam, file-length, wildcard-import, and
 /// dynamic-SQLx passes are always active (file-length only fires once
 /// `MAX_FILE_LINES` is set).
@@ -138,6 +152,13 @@ mod config {
     /// public-fn pass.
     pub fn bool_params_enabled() -> bool {
         env::var_os("RUST_LINTS_BOOL_PARAMS").is_some()
+    }
+
+    /// `RUST_LINTS_BUILD_TIME_MANIFEST_DIR`: feature gate for the build-time
+    /// `CARGO_MANIFEST_DIR` pass. Off by default: plenty of projects bake the
+    /// manifest dir on purpose.
+    pub fn build_time_manifest_dir_enabled() -> bool {
+        env::var_os("RUST_LINTS_BUILD_TIME_MANIFEST_DIR").is_some()
     }
 
     /// `RUST_LINTS_LABEL`: free-text platform label woven into messages
@@ -233,6 +254,10 @@ impl<'tcx> LateLintPass<'tcx> for RustLintsPolicyChecks {
         check_file_lengths(cx);
     }
 
+    fn check_crate_post(&mut self, cx: &LateContext<'tcx>) {
+        self.manifest_dir_reads.check_crate_post(cx);
+    }
+
     fn check_item(&mut self, cx: &LateContext<'tcx>, item: &'tcx Item<'tcx>) {
         let snippet = snippet(cx, item.span);
 
@@ -255,6 +280,7 @@ impl<'tcx> LateLintPass<'tcx> for RustLintsPolicyChecks {
         check_blocking_call_in_async_context(cx, expr, &expr_snippet);
         check_silent_numeric_saturation(cx, expr);
         check_unbounded_channel(cx, expr);
+        self.manifest_dir_reads.observe_expr(cx, expr);
 
         if let ExprKind::Call(callee, _) = expr.kind {
             let callee_snippet = snippet(cx, callee.span);
@@ -1784,6 +1810,7 @@ SELECT id FROM workers"#"##
             "RUST_LINTS_SILENT_SATURATION",
             "RUST_LINTS_UNBOUNDED_CHANNEL",
             "RUST_LINTS_BOOL_PARAMS",
+            "RUST_LINTS_BUILD_TIME_MANIFEST_DIR",
         ] {
             // SAFETY: tests are single-threaded; we restore nothing because the
             // default-off contract is what we are asserting.
@@ -1794,6 +1821,7 @@ SELECT id FROM workers"#"##
         assert!(!config::silent_saturation_enabled());
         assert!(!config::unbounded_channel_enabled());
         assert!(!config::bool_params_enabled());
+        assert!(!config::build_time_manifest_dir_enabled());
     }
 
     #[test]

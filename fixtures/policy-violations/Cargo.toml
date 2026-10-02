@@ -7,6 +7,8 @@ members = [
   "crates/product-integration",
   "crates/product-long-file",
   "crates/product-conversions",
+  "crates/product-manifest-dir",
+  "crates/product-manifest-dir-clean",
 ]
 resolver = "3"
 
