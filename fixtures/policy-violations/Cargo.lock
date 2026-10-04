@@ -5,6 +5,11 @@ version = 4
 [[package]]
 name = "fixture-db-seam"
 version = "0.1.0"
+dependencies = [
+ "fixture-sql-consts",
+ "sqlx",
+ "sqlx-core",
+]
 
 [[package]]
 name = "fixture-policy-api"
@@ -39,4 +44,19 @@ dependencies = [
 
 [[package]]
 name = "fixture-product-manifest-dir-clean"
+version = "0.1.0"
+
+[[package]]
+name = "fixture-sql-consts"
+version = "0.1.0"
+
+[[package]]
+name = "sqlx"
+version = "0.1.0"
+dependencies = [
+ "sqlx-core",
+]
+
+[[package]]
+name = "sqlx-core"
 version = "0.1.0"

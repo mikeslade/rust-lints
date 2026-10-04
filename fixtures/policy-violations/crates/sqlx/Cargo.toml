@@ -1,10 +1,9 @@
+# Stand-in for the real `sqlx` facade, which re-exports the constructors from `sqlx-core`.
 [package]
-name = "fixture-db-seam"
+name = "sqlx"
 version = "0.1.0"
 edition.workspace = true
 publish.workspace = true
 
 [dependencies]
-sqlx = { path = "../sqlx" }
 sqlx-core = { path = "../sqlx-core" }
-fixture-sql-consts = { path = "../sql-consts" }

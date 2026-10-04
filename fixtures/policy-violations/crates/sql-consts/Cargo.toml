@@ -1,0 +1,7 @@
+# Query text defined in a crate other than the one that runs it, so the SQLx passes
+# must read it through the const evaluator rather than this crate's HIR.
+[package]
+name = "fixture-sql-consts"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true

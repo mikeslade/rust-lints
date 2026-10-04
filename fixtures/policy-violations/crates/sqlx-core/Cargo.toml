@@ -1,0 +1,8 @@
+# Stand-in for the real `sqlx-core`: the same crate name and the same module paths for
+# the runtime query constructors, so the SQLx passes resolve these calls exactly as they
+# resolve the real ones.
+[package]
+name = "sqlx-core"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
