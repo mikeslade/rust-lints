@@ -20,7 +20,8 @@
 //!   or `sqlx` is not SQLx.
 //! - **The SQL argument** is followed to its definition through HIR and the const
 //!   evaluator: a string literal (including what `concat!` produced), a `const` or
-//!   associated const anywhere, a `static` in this crate, a reference to any of those,
+//!   associated const anywhere (a trait's const evaluated for the implementation the
+//!   path reaches), a `static` in this crate, a reference to any of those,
 //!   and a call to a zero-argument function in this crate whose body is one of those.
 //!   A `const` or `static` whose text cannot be read is still static SQL: it is reported
 //!   rather than waved through.
@@ -33,8 +34,10 @@ use rustc_ast::LitKind;
 use rustc_hir::def::{DefKind, Res};
 use rustc_hir::{Expr, ExprKind, QPath};
 use rustc_lint::LateContext;
-use rustc_middle::ty::TyCtxt;
-use rustc_span::def_id::DefId;
+use rustc_middle::mir::UnevaluatedConst;
+use rustc_middle::ty::{self, GenericArgsRef, TyCtxt, TypeckResults};
+use rustc_span::DUMMY_SP;
+use rustc_span::def_id::{DefId, LocalDefId};
 
 use crate::snippet;
 
@@ -158,17 +161,37 @@ fn static_sql_of<'tcx>(tcx: TyCtxt<'tcx>, expr: &Expr<'tcx>, depth: usize) -> Op
             static_sql_of(tcx, block.expr?, depth + 1)
         }
         ExprKind::Path(qpath) => {
-            let res = path_res(tcx, expr, &qpath)?;
-            static_sql_of_item(tcx, res, depth)
+            let owner = tcx.hir_enclosing_body_owner(expr.hir_id);
+            let typeck = tcx.typeck(owner);
+            match path_res(typeck, expr, &qpath)? {
+                Res::Def(DefKind::Const | DefKind::AssocConst, def_id) => {
+                    let args = typeck.node_args(expr.hir_id);
+                    Some(
+                        evaluated_const_text(tcx, owner, def_id, args)
+                            .map_or(StaticSql::Unreadable, StaticSql::Text),
+                    )
+                }
+                Res::Def(DefKind::Static { .. }, def_id) => {
+                    Some(local_static_text(tcx, def_id, depth))
+                }
+                _ => None,
+            }
         }
         ExprKind::Call(callee, []) => {
             let ExprKind::Path(qpath) = callee.kind else {
                 return None;
             };
-            let Res::Def(DefKind::Fn | DefKind::AssocFn, def_id) = path_res(tcx, callee, &qpath)?
+            let typeck = tcx.typeck(tcx.hir_enclosing_body_owner(callee.hir_id));
+            let Res::Def(DefKind::Fn | DefKind::AssocFn, def_id) =
+                path_res(typeck, callee, &qpath)?
             else {
                 return None;
             };
+            // A trait method's path names the declaration, not the implementation the
+            // call reaches, so its body proves nothing about the value.
+            if tcx.trait_of_assoc(def_id).is_some() {
+                return None;
+            }
             let body = tcx.hir_maybe_body_owned_by(def_id.as_local()?)?;
             static_sql_of(tcx, body.value, depth + 1)
         }
@@ -178,37 +201,44 @@ fn static_sql_of<'tcx>(tcx: TyCtxt<'tcx>, expr: &Expr<'tcx>, depth: usize) -> Op
 
 /// What a path expression resolved to. A type-relative path (`Self::SQL`) is resolved
 /// through the type-check results of the body it appears in.
-fn path_res<'tcx>(tcx: TyCtxt<'tcx>, expr: &Expr<'tcx>, qpath: &QPath<'tcx>) -> Option<Res> {
+fn path_res(typeck: &TypeckResults<'_>, expr: &Expr<'_>, qpath: &QPath<'_>) -> Option<Res> {
     match qpath {
         QPath::Resolved(_, path) => Some(path.res),
-        QPath::TypeRelative(..) => tcx
-            .typeck(tcx.hir_enclosing_body_owner(expr.hir_id))
+        QPath::TypeRelative(..) => typeck
             .type_dependent_def(expr.hir_id)
             .map(|(kind, def_id)| Res::Def(kind, def_id)),
     }
 }
 
-fn static_sql_of_item(tcx: TyCtxt<'_>, res: Res, depth: usize) -> Option<StaticSql> {
-    match res {
-        Res::Def(DefKind::Const | DefKind::AssocConst, def_id) => {
-            Some(evaluated_const_text(tcx, def_id).map_or(StaticSql::Unreadable, StaticSql::Text))
-        }
-        Res::Def(DefKind::Static { .. }, def_id) => {
-            let Some(local) = def_id.as_local() else {
-                return Some(StaticSql::Unreadable);
-            };
-            let Some(body) = tcx.hir_maybe_body_owned_by(local) else {
-                return Some(StaticSql::Unreadable);
-            };
-            Some(static_sql_of(tcx, body.value, depth + 1).unwrap_or(StaticSql::Unreadable))
-        }
-        _ => None,
-    }
+/// A `static` in this crate, read through its HIR initializer. One in another crate has
+/// no HIR here and is still static, so it is unreadable rather than not static.
+fn local_static_text(tcx: TyCtxt<'_>, def_id: DefId, depth: usize) -> StaticSql {
+    let Some(local) = def_id.as_local() else {
+        return StaticSql::Unreadable;
+    };
+    let Some(body) = tcx.hir_maybe_body_owned_by(local) else {
+        return StaticSql::Unreadable;
+    };
+    static_sql_of(tcx, body.value, depth + 1).unwrap_or(StaticSql::Unreadable)
 }
 
 /// The text a `&str` constant evaluates to, wherever it is defined.
-fn evaluated_const_text(tcx: TyCtxt<'_>, def_id: DefId) -> Option<String> {
-    let value = tcx.const_eval_poly(def_id).ok()?;
+///
+/// The constant is evaluated with the generic arguments the use site recorded, so a
+/// trait's associated const resolves to the implementation the path reaches (or the
+/// trait's default when the implementation has none), never to the declaration. A
+/// use that is still generic (`T::SQL` in a generic fn) cannot be evaluated and comes
+/// back `None`, which the caller reports as unreadable static SQL.
+fn evaluated_const_text<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    owner: LocalDefId,
+    def_id: DefId,
+    args: GenericArgsRef<'tcx>,
+) -> Option<String> {
+    let typing_env = ty::TypingEnv::post_analysis(tcx, owner);
+    let value = tcx
+        .const_eval_resolve(typing_env, UnevaluatedConst::new(def_id, args), DUMMY_SP)
+        .ok()?;
     let bytes = value.try_get_slice_bytes_for_diagnostics(tcx)?;
     std::str::from_utf8(bytes).ok().map(str::to_owned)
 }

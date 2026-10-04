@@ -130,6 +130,47 @@ pub fn static_in_another_crate() {
     let _: sqlx_core::Query<Postgres> = sqlx::query(fixture_sql_consts::FOREIGN_STATIC_SQL); // sqlx-query: expect-static
 }
 
+// A trait's associated const is evaluated for the implementation the path reaches. The
+// path itself names the trait's declaration, which has no value (a required const) or
+// the wrong one (an overridden default).
+pub trait SqlSource {
+    const SQL: &'static str;
+}
+
+pub trait SqlWithDefault {
+    const SQL: &'static str = "SET LOCAL lock_timeout = '1s'";
+}
+
+pub struct Ledger;
+pub struct Journal;
+pub struct Settings;
+
+impl SqlSource for Ledger {
+    const SQL: &'static str = "--sql
+SELECT id FROM ledger";
+}
+
+impl SqlWithDefault for Journal {
+    const SQL: &'static str = "--sql
+SELECT id FROM journal";
+}
+
+impl SqlWithDefault for Settings {}
+
+pub fn trait_const_required() {
+    let _: sqlx_core::Query<Postgres> = sqlx::query(Ledger::SQL); // sqlx-query: expect-static
+    let _: sqlx_core::Query<Postgres> = sqlx::query(<Ledger as SqlSource>::SQL); // sqlx-query: expect-static
+}
+
+pub fn trait_const_overridden_default() {
+    let _: sqlx_core::Query<Postgres> = sqlx::query(Journal::SQL); // sqlx-query: expect-static
+}
+
+// Still generic here, so its text cannot be read; it is static all the same.
+pub fn trait_const_generic<T: SqlSource>() {
+    let _: sqlx_core::Query<Postgres> = sqlx::query(T::SQL); // sqlx-query: expect-static
+}
+
 // A `use` under another name reaches the same definition.
 pub fn renamed_import() {
     let _: sqlx_core::QueryAs<Postgres, Row> = fetch_rows::<_, Row>(FACT_SQL); // sqlx-query: expect-static
@@ -197,6 +238,24 @@ const LOCK_TIMEOUT_SQL: &str = "SET LOCAL lock_timeout = '1s'";
 pub fn static_non_dml() {
     let _: sqlx_core::Query<Postgres> = sqlx::query(LOCK_TIMEOUT_SQL);
     let _: sqlx_core::Query<Postgres> = sqlx::query("SET LOCAL statement_timeout = '5s'");
+    // The trait's non-DML default, which `Settings` does not override.
+    let _: sqlx_core::Query<Postgres> = sqlx::query(Settings::SQL);
+    // A trait method's path names its declaration; the default body below is not what
+    // `Settings` runs, so it proves nothing.
+    let _: sqlx_core::Query<Postgres> = sqlx::query(Settings::sql());
+}
+
+pub trait SqlFn {
+    fn sql() -> &'static str {
+        "--sql
+SELECT id FROM defaults"
+    }
+}
+
+impl SqlFn for Settings {
+    fn sql() -> &'static str {
+        "SET LOCAL lock_timeout = '1s'"
+    }
 }
 
 // A function or module that is merely called `query` or `sqlx` is not SQLx.
