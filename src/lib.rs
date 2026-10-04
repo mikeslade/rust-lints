@@ -13,7 +13,8 @@
 //! 4. File-length ratchet: source files must stay under a configured line cap
 //!    unless a documented exception (inline marker or TSV inventory) covers them.
 //! 5. Silent numeric saturation: a fallible numeric conversion whose error is
-//!    swallowed by the `unwrap_or` family silently corrupts a persisted value.
+//!    swallowed by the `unwrap_or` family, or by `map_or`/`map_or_else` with an
+//!    identity mapping, silently corrupts a persisted value.
 //! 6. Unbounded channel: a channel constructor with no backpressure bound.
 //! 7. Boolean parameter on a public fn: blind at call sites; use a named enum.
 //! 8. Build-time `CARGO_MANIFEST_DIR` read: an `env!`/`option_env!` that bakes the
@@ -58,6 +59,7 @@ use rustc_trait_selection::traits::query::evaluate_obligation::InferCtxtExt;
 
 dylint_linting::dylint_library!();
 
+mod identity_map;
 mod manifest_dir_env;
 mod sqlx_runtime_query;
 
@@ -614,7 +616,8 @@ fn check_strict_compile_time_sqlx(
 ///
 /// Match strategy (HIR + types, conservative):
 /// 1. The outer expression is a `MethodCall` whose method is one of the
-///    `unwrap_or` family.
+///    `unwrap_or` family, or `map_or`/`map_or_else` with an identity mapping
+///    (see [`identity_map`]).
 /// 2. Its receiver is itself a `MethodCall`/`Call` to `try_from`/`try_into`.
 /// 3. The receiver's type is `Result<T, _>` whose `Ok` type `T` is a primitive
 ///    integer or float. Keying on the *resolved* `Ok` type (not the syntactic
@@ -638,10 +641,10 @@ fn check_silent_numeric_saturation(cx: &LateContext<'_>, expr: &Expr<'_>) {
         return;
     }
 
-    let ExprKind::MethodCall(segment, receiver, _, _) = expr.kind else {
+    let ExprKind::MethodCall(segment, receiver, args, _) = expr.kind else {
         return;
     };
-    if !is_unwrap_or_family(segment.ident.as_str()) {
+    if !discards_conversion_error(cx, segment.ident.as_str(), args) {
         return;
     }
     if !receiver_is_fallible_conversion(receiver) {
@@ -659,12 +662,31 @@ fn check_silent_numeric_saturation(cx: &LateContext<'_>, expr: &Expr<'_>) {
     );
 }
 
+/// True when the method call replaces the conversion error with a default value: one of
+/// the `unwrap_or` family, or `map_or`/`map_or_else` whose success mapping is proven to
+/// be the identity, which makes it the same expression (radiology-platform#1934).
+fn discards_conversion_error(cx: &LateContext<'_>, method_name: &str, args: &[Expr<'_>]) -> bool {
+    if is_unwrap_or_family(method_name) {
+        return true;
+    }
+    let [_default, mapping] = args else {
+        return false;
+    };
+    is_map_or_family(method_name) && identity_map::is_identity_mapping(cx, mapping)
+}
+
 /// The `unwrap_or` family that silently discards the conversion error.
 fn is_unwrap_or_family(method_name: &str) -> bool {
     matches!(
         method_name,
         "unwrap_or" | "unwrap_or_default" | "unwrap_or_else"
     )
+}
+
+/// `map_or(default, f)` and `map_or_else(default_fn, f)`: with an identity `f` these are
+/// `unwrap_or(default)` and `unwrap_or_else(default_fn)`.
+fn is_map_or_family(method_name: &str) -> bool {
+    matches!(method_name, "map_or" | "map_or_else")
 }
 
 /// True when `receiver` is syntactically a `try_from(..)` / `try_into(..)` call.
@@ -1469,7 +1491,7 @@ mod tests {
         has_inline_file_length_exception_with_marker, inventory_lists_path,
         is_blocking_function_call, is_blocking_method_name, is_blocking_path,
         is_blocking_quarantine_call, is_exempt_fn_name, is_fallible_conversion_name,
-        is_non_blocking_net_value_path, is_repo_rust_source_path_with_roots,
+        is_map_or_family, is_non_blocking_net_value_path, is_repo_rust_source_path_with_roots,
         is_unbounded_channel_path, is_unwrap_or_family, string_literal_starts_with_sql_marker,
     };
 
@@ -1736,6 +1758,11 @@ SELECT id FROM workers"#"##
         assert!(is_unwrap_or_family("unwrap_or_else"));
         assert!(!is_unwrap_or_family("unwrap"));
         assert!(!is_unwrap_or_family("expect"));
+        assert!(!is_unwrap_or_family("map_or"));
+        // `map_or`/`map_or_else` count only with an identity mapping, which needs HIR.
+        assert!(is_map_or_family("map_or"));
+        assert!(is_map_or_family("map_or_else"));
+        assert!(!is_map_or_family("map"));
         // Receiver must be a fallible conversion.
         assert!(is_fallible_conversion_name("try_from"));
         assert!(is_fallible_conversion_name("try_into"));
