@@ -3,6 +3,12 @@
 //! Each pass below has a VIOLATION case (fires only when its `RUST_LINTS_*` var
 //! is set) and a CLEAN case (never fires). With all gates UNSET this whole crate
 //! is silent.
+//!
+//! Every silent-saturation finding carries a trailing `// silent-saturation: expect`
+//! marker; `scripts/check-silent-saturation-fixture.sh` set-diffs the markers against
+//! what the pass reports, in both directions.
+
+use std::convert::identity;
 
 // ---------------------------------------------------------------------------
 // Pass: silent numeric saturation / default substitution
@@ -11,24 +17,92 @@
 
 // VIOLATION: a fallible numeric conversion whose overflow is silently saturated.
 pub fn saturating_count(count: usize) -> i32 {
-    i32::try_from(count).unwrap_or(i32::MAX)
+    i32::try_from(count).unwrap_or(i32::MAX) // silent-saturation: expect
 }
 
 // VIOLATION: `.unwrap_or_default()` swallows the out-of-range case to 0.
 pub fn defaulting_count(count: u64) -> u32 {
-    u32::try_from(count).unwrap_or_default()
+    u32::try_from(count).unwrap_or_default() // silent-saturation: expect
 }
 
 // VIOLATION: `.try_into()` receiver form, error discarded by `unwrap_or_else`.
 pub fn truncating_len(len: usize) -> u16 {
-    let narrowed: u16 = len.try_into().unwrap_or_else(|_| u16::MAX);
+    let narrowed: u16 = len.try_into().unwrap_or_else(|_| u16::MAX); // silent-saturation: expect
     narrowed
+}
+
+// VIOLATION (#1934): `map_or` with an identity closure is `unwrap_or`.
+pub fn identity_closure(x: u64) -> u32 {
+    u32::try_from(x).map_or(u32::MAX, |v| v) // silent-saturation: expect
+}
+
+// VIOLATION: the identity function, however it is spelled or imported.
+pub fn identity_fn_std(x: u64) -> u32 {
+    u32::try_from(x).map_or(u32::MAX, std::convert::identity) // silent-saturation: expect
+}
+
+pub fn identity_fn_core(x: u64) -> u32 {
+    u32::try_from(x).map_or(u32::MAX, core::convert::identity) // silent-saturation: expect
+}
+
+pub fn identity_fn_imported(x: u64) -> u32 {
+    u32::try_from(x).map_or(u32::MAX, identity) // silent-saturation: expect
+}
+
+// VIOLATION: a typed parameter and a block body are still the identity, and any
+// default counts, as it does for `unwrap_or`.
+pub fn identity_block(x: u64) -> u32 {
+    u32::try_from(x).map_or(0, |v: u32| { v }) // silent-saturation: expect
+}
+
+// VIOLATION: `map_or_else` with an identity mapping is `unwrap_or_else`.
+pub fn identity_map_or_else(len: usize) -> u16 {
+    u16::try_from(len).map_or_else(|_| u16::MAX, |v| v) // silent-saturation: expect
+}
+
+// VIOLATION: the `.try_into()` receiver form.
+pub fn identity_try_into(x: i64) -> i32 {
+    x.try_into().map_or(i32::MIN, |v: i32| v) // silent-saturation: expect
+}
+
+// VIOLATION: a cast to the type the value already has changes nothing.
+pub fn identity_cast(x: u32) -> u8 {
+    u8::try_from(x).map_or(u8::MAX, |v| v as u8) // silent-saturation: expect
+}
+
+// CLEAN: `map_or(None, Some)` is `.ok()`; the error is surfaced as `None`.
+pub fn surfaced_as_none(x: u64) -> Option<u32> {
+    u32::try_from(x).map_or(None, Some)
+}
+
+// CLEAN: a mapping that is not the identity is not proven to be `unwrap_or`.
+pub fn mapped_value(x: u64) -> u32 {
+    u32::try_from(x).map_or(0, |v| v / 2)
+}
+
+pub fn predicate(x: u64) -> bool {
+    u32::try_from(x).map_or(false, |v| v > 3)
+}
+
+// CLEAN: a closure that returns a captured value, not its parameter.
+pub fn captured_fallback(x: u64, fallback: u32) -> u32 {
+    u32::try_from(x).map_or(u32::MAX, |_v| fallback)
+}
+
+// CLEAN: a cast to another type is a conversion, not the identity.
+pub fn widened(x: u64) -> u64 {
+    u32::try_from(x).map_or(0, |v| v as u64)
 }
 
 // CLEAN: a non-numeric `TryFrom` (target is a String), so the numeric gate keeps
 // the pass quiet even though the unwrap_or shape is present.
 pub fn lossy_string(bytes: Vec<u8>) -> String {
     String::from_utf8(bytes).unwrap_or_default()
+}
+
+// CLEAN: the identity over a non-numeric conversion.
+pub fn lossy_string_identity(bytes: Vec<u8>) -> String {
+    String::from_utf8(bytes).map_or(String::new(), |s| s)
 }
 
 // CLEAN: the out-of-range case is handled explicitly rather than swallowed.
@@ -112,6 +186,11 @@ pub fn suppressed_saturation(count: usize) -> i32 {
 }
 
 #[allow(rust_lints_policy_checks)]
+pub fn suppressed_identity_saturation(count: usize) -> i32 {
+    i32::try_from(count).map_or(i32::MAX, |v| v)
+}
+
+#[allow(rust_lints_policy_checks)]
 pub fn suppressed_bool_param(_verbose: bool) {}
 
 // ---------------------------------------------------------------------------
@@ -132,9 +211,14 @@ mod tests {
         i32::try_from(count).unwrap_or(i32::MAX)
     }
 
+    pub fn fixture_narrow_identity(count: usize) -> i32 {
+        i32::try_from(count).map_or(i32::MAX, |v| v)
+    }
+
     #[test]
     fn renders() {
         assert_rendered(true);
         let _ = fixture_narrow(0);
+        let _ = fixture_narrow_identity(0);
     }
 }

@@ -5,6 +5,12 @@ library — the mechanical enforcement for rules Clippy cannot express:
 
 - **SQL-seam ownership** — SQL lives only in the persistence-seam crate.
 - **Inline-SQL markers** — every inline SQL literal starts with `--sql`.
+- **Compile-time SQLx** — static SQL handed to `sqlx::query`, `query_as` or
+  `query_scalar` should use the checked macros (`RUST_LINTS_STRICT_SQLX=1`), and
+  dynamic SQL in the seam must cross a documented safety boundary. The callee is
+  judged by the definition it resolved to, so a turbofish or a renamed import is
+  the same call, and the SQL argument is followed to its definition: a literal, a
+  `const` in any module or crate, a `static`, or a function returning one.
 - **Outbound-HTTP wrapper** — HTTP goes through the reviewed wrapper crate,
   not a raw client (`RUST_LINTS_HTTP_WRAPPER=1`).
 - **Blocking-in-async quarantine** — blocking calls in async contexts get
@@ -12,8 +18,11 @@ library — the mechanical enforcement for rules Clippy cannot express:
   blocking by its resolved path, or by its method name when the value it
   produces is not a `Future` — so a project's own wrapper around
   `std::sync::mpsc` is caught while Tokio's async `recv`/`wait` are not.
-- **Silent saturation** — `saturating_*` arithmetic needs a documented
-  business rule (`RUST_LINTS_SILENT_SATURATION=1`).
+- **Silent saturation** — a fallible numeric conversion whose error is replaced
+  by a default: `T::try_from(x).unwrap_or(..)` and its family, and
+  `map_or(..)`/`map_or_else(..)` whose mapping is proven the identity (`|v| v`,
+  `convert::identity`, a cast to the same type), which is the same expression
+  (`RUST_LINTS_SILENT_SATURATION=1`).
 - **Unbounded channels** — `RUST_LINTS_UNBOUNDED_CHANNEL=1`.
 - **Boolean positional parameters** — `RUST_LINTS_BOOL_PARAMS=1`.
 - **Build-time `CARGO_MANIFEST_DIR` reads** — an `env!`/`option_env!` that
@@ -93,4 +102,19 @@ target (`--all-targets`), with `// manifest-dir: expect` and
 
 ```bash
 nix develop -c scripts/check-manifest-dir-fixture.sh
+```
+
+The SQLx runtime-query cases are asserted with `// sqlx-query: expect-static` and
+`// sqlx-query: expect-dynamic` markers. `crates/sqlx` and `crates/sqlx-core` are
+stand-ins with the real crates' names and item paths:
+
+```bash
+nix develop -c scripts/check-sqlx-query-fixture.sh
+```
+
+The silent-saturation cases are asserted with `// silent-saturation: expect`
+markers, over every target so the `#[cfg(test)]` controls stay quiet:
+
+```bash
+nix develop -c scripts/check-silent-saturation-fixture.sh
 ```
