@@ -46,7 +46,7 @@ pub(crate) fn is_identity_mapping(cx: &LateContext<'_>, mapping: &Expr<'_>) -> b
             else {
                 return false;
             };
-            returns_binding(cx, body.value, binding)
+            returns_binding(cx, &body.value, binding)
         }
         _ => false,
     }
