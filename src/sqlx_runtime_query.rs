@@ -193,7 +193,7 @@ fn static_sql_of<'tcx>(tcx: TyCtxt<'tcx>, expr: &Expr<'tcx>, depth: usize) -> Op
                 return None;
             }
             let body = tcx.hir_maybe_body_owned_by(def_id.as_local()?)?;
-            static_sql_of(tcx, body.value, depth + 1)
+            static_sql_of(tcx, &body.value, depth + 1)
         }
         _ => None,
     }
@@ -219,7 +219,7 @@ fn local_static_text(tcx: TyCtxt<'_>, def_id: DefId, depth: usize) -> StaticSql 
     let Some(body) = tcx.hir_maybe_body_owned_by(local) else {
         return StaticSql::Unreadable;
     };
-    static_sql_of(tcx, body.value, depth + 1).unwrap_or(StaticSql::Unreadable)
+    static_sql_of(tcx, &body.value, depth + 1).unwrap_or(StaticSql::Unreadable)
 }
 
 /// The text a `&str` constant evaluates to, wherever it is defined.

@@ -27,6 +27,7 @@
 //! [`config`] module for the full contract.
 
 extern crate rustc_ast;
+extern crate rustc_attr_ir;
 extern crate rustc_errors;
 extern crate rustc_hir;
 extern crate rustc_infer;
@@ -912,7 +913,7 @@ fn is_in_test_context(cx: &LateContext<'_>, def_id: LocalDefId) -> bool {
     false
 }
 
-fn attrs_mark_test(attrs: &[rustc_hir::Attribute]) -> bool {
+fn attrs_mark_test(attrs: &[rustc_attr_ir::Attribute]) -> bool {
     attrs.iter().any(|attr| {
         attr.has_name(rustc_span::sym::test)
             || (attr.has_name(rustc_span::sym::cfg)
