@@ -1,4 +1,5 @@
 #![feature(rustc_private)]
+#![feature(default_field_values)]
 #![warn(unused_extern_crates)]
 
 //! Shared architecture-policy Dylint.
@@ -67,7 +68,9 @@ mod sqlx_runtime_query;
 // `declare_lint!` / `declare_lint_pass!` are defined in `rustc_lint_defs` and
 // re-exported by `rustc_lint`. They were reachable through `rustc_session` until
 // nightly-2026-08-26 dropped that re-export; `rustc_lint` is already an extern
-// crate here, so this needs no new dependency.
+// crate here, so this needs no new dependency. As of nightly-2026-10-22 the
+// expansion closes the `Lint` literal with a bare `..`, hence the
+// `default_field_values` feature above.
 rustc_lint::declare_lint! {
     /// ### What it does
     ///
