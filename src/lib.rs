@@ -44,6 +44,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
+use rustc_ast::attr::AttributeExt;
 use rustc_errors::{Diag, Diagnostic, Level, MultiSpan};
 use rustc_hir::def_id::LocalDefId;
 use rustc_hir::intravisit::FnKind;
@@ -916,12 +917,14 @@ fn is_in_test_context(cx: &LateContext<'_>, def_id: LocalDefId) -> bool {
     false
 }
 
+// Called through `AttributeExt` explicitly: nightly-2026-10-24 dropped the
+// inherent `has_name` / `meta_item_list` on `rustc_attr_ir::Attribute`, while
+// older nightlies still have them and would leave a plain trait import unused.
 fn attrs_mark_test(attrs: &[rustc_attr_ir::Attribute]) -> bool {
     attrs.iter().any(|attr| {
-        attr.has_name(rustc_span::sym::test)
-            || (attr.has_name(rustc_span::sym::cfg)
-                && attr
-                    .meta_item_list()
+        AttributeExt::has_name(attr, rustc_span::sym::test)
+            || (AttributeExt::has_name(attr, rustc_span::sym::cfg)
+                && AttributeExt::meta_item_list(attr)
                     .into_iter()
                     .flatten()
                     .any(|nested| nested.has_name(rustc_span::sym::test)))
