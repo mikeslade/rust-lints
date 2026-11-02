@@ -35,7 +35,7 @@ use rustc_hir::def::{DefKind, Res};
 use rustc_hir::{Expr, ExprKind, QPath};
 use rustc_lint::LateContext;
 use rustc_middle::mir::UnevaluatedConst;
-use rustc_middle::ty::{self, GenericArgsRef, TyCtxt, TypeckResults};
+use rustc_middle::ty::{self, TyCtxt, TypeckResults};
 use rustc_span::DUMMY_SP;
 use rustc_span::def_id::{DefId, LocalDefId};
 
@@ -165,9 +165,9 @@ fn static_sql_of<'tcx>(tcx: TyCtxt<'tcx>, expr: &Expr<'tcx>, depth: usize) -> Op
             let typeck = tcx.typeck(owner);
             match path_res(typeck, expr, &qpath)? {
                 Res::Def(DefKind::Const | DefKind::AssocConst, def_id) => {
-                    let args = typeck.node_args(expr.hir_id);
+                    let constant = UnevaluatedConst::new(def_id, typeck.node_args(expr.hir_id));
                     Some(
-                        evaluated_const_text(tcx, owner, def_id, args)
+                        evaluated_const_text(tcx, owner, constant)
                             .map_or(StaticSql::Unreadable, StaticSql::Text),
                     )
                 }
@@ -232,12 +232,11 @@ fn local_static_text(tcx: TyCtxt<'_>, def_id: DefId, depth: usize) -> StaticSql 
 fn evaluated_const_text<'tcx>(
     tcx: TyCtxt<'tcx>,
     owner: LocalDefId,
-    def_id: DefId,
-    args: GenericArgsRef<'tcx>,
+    constant: UnevaluatedConst<'tcx>,
 ) -> Option<String> {
     let typing_env = ty::TypingEnv::post_analysis(tcx, owner);
     let value = tcx
-        .const_eval_resolve(typing_env, UnevaluatedConst::new(def_id, args), DUMMY_SP)
+        .const_eval_resolve(typing_env, constant, DUMMY_SP)
         .ok()?;
     let bytes = value.try_get_slice_bytes_for_diagnostics(tcx)?;
     std::str::from_utf8(bytes).ok().map(str::to_owned)
