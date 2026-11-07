@@ -44,7 +44,6 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-use rustc_ast::attr::AttributeExt;
 use rustc_errors::{Diag, Diagnostic, Level, MultiSpan};
 use rustc_hir::def_id::LocalDefId;
 use rustc_hir::intravisit::FnKind;
@@ -917,17 +916,28 @@ fn is_in_test_context(cx: &LateContext<'_>, def_id: LocalDefId) -> bool {
     false
 }
 
-// Called through `AttributeExt` explicitly: nightly-2026-10-24 dropped the
-// inherent `has_name` / `meta_item_list` on `rustc_attr_ir::Attribute`, while
-// older nightlies still have them and would leave a plain trait import unused.
+/// True when the item carries a `#[cfg(test)]` that survived cfg-expansion.
+///
+/// By HIR time rustc has already evaluated `cfg` and records each one that held
+/// as the parsed `AttributeKind::CfgTrace`; there is no raw `cfg` attribute
+/// left to inspect. nightly-2026-11-07 removed the unparsed attribute variant
+/// and `AttributeExt::has_name` / `meta_item_list` entirely, and `CfgTrace` /
+/// `CfgEntry` have the same shape back to nightly-2026-09-26 (the supplied
+/// toolchain check). A `#[test]` fn never reaches here: outside a `--test`
+/// build the test macro deletes it, and `--test` builds return earlier.
 fn attrs_mark_test(attrs: &[rustc_attr_ir::Attribute]) -> bool {
     attrs.iter().any(|attr| {
-        AttributeExt::has_name(attr, rustc_span::sym::test)
-            || (AttributeExt::has_name(attr, rustc_span::sym::cfg)
-                && AttributeExt::meta_item_list(attr)
-                    .into_iter()
-                    .flatten()
-                    .any(|nested| nested.has_name(rustc_span::sym::test)))
+        let rustc_attr_ir::Attribute::Parsed(rustc_attr_ir::AttributeKind::CfgTrace(cfgs)) = attr
+        else {
+            return false;
+        };
+        cfgs.iter().any(|(cfg, _)| {
+            matches!(
+                cfg,
+                rustc_attr_ir::CfgEntry::NameValue { name, value: None, .. }
+                    if *name == rustc_span::sym::test
+            )
+        })
     })
 }
 
