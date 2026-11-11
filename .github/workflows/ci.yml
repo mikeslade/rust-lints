@@ -1,0 +1,54 @@
+# This crate compiles against `rustc_private`, which changes without ceremony —
+# a nightly that removes a re-export breaks the build with no deprecation. The
+# flake's default toolchain is a rolling `selectLatestNightlyWith`, so this
+# workflow is the early warning for every consumer that pins a date and expects
+# the policy library to be loadable on it.
+#
+# Without it, a break is discovered downstream: the consumer's workspace and
+# lints stay green and `cargo dylint` dies with a bare `dlopen` failure that
+# reads like a broken toolchain and is not one.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Nightly moves daily; the point is to hear about a break within a day of it
+  # landing rather than at a consumer's next bump.
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  flake-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      # Covers both halves of the seam: `build` and `exact-toolchain-identity`
+      # for the rolling default, and `supplied-toolchain-identity` for the
+      # consumer-supplied path a pinned consumer actually takes.
+      - run: nix flake check --print-build-logs
+
+  # The scheduled run above checks the toolchain the LOCK holds, which goes
+  # stale. This asks the sharper question — does the crate still build against
+  # the newest nightly published today? — without committing the lock bump.
+  rolling-nightly:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - run: nix flake update
+      - run: nix flake check --print-build-logs
