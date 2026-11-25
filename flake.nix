@@ -67,8 +67,30 @@
       craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
       src = craneLib.cleanCargoSource ./.;
 
-      commonArgs = {
+      # rustc moved `ErrorOutputType` to `rustc_session::output`, leaving only a
+      # private import in `rustc_session::config` (nightly 2026-11-24), so
+      # dylint_linting 6.4.0 fails with E0603 on any newer nightly. Upstream
+      # fixed it by letting `EarlyDiagCtxt::new`'s argument type pick the
+      # default (trailofbits/dylint@a7c307f), which is not released yet; apply
+      # the same change to the vendored crate. --replace-fail makes a release
+      # carrying the fix surface here as a build failure, the cue to drop this.
+      cargoVendorDir = craneLib.vendorCargoDeps {
         inherit src;
+        overrideVendorCargoPackage = p: drv:
+          if p.name == "dylint_linting"
+          then
+            drv.overrideAttrs (_: {
+              postPatch = ''
+                substituteInPlace src/lib.rs \
+                  --replace-fail 'rustc_session::config::ErrorOutputType::default()' \
+                    'Default::default()'
+              '';
+            })
+          else drv;
+      };
+
+      commonArgs = {
+        inherit src cargoVendorDir;
         pname = "rust-lints";
         version = "0.1.0";
         strictDeps = true;
@@ -86,28 +108,26 @@
       # dylint repo rather than crates.io: dylint's build.rs packages the
       # sibling `driver/` directory, which the crates.io tarball omits.
       # Version matches the dylint_linting pin in Cargo.lock.
-      dylintToolsVersion = "6.1.0";
+      dylintToolsVersion = "6.4.0";
       dylintToolsSrc = pkgs.applyPatches {
         name = "dylint-${dylintToolsVersion}-source";
         src = pkgs.fetchFromGitHub {
           owner = "trailofbits";
           repo = "dylint";
           rev = "v${dylintToolsVersion}";
-          hash = "sha256-KgEn3AZnITS6Uhc6CElCMqOucu+/Cc4w9Jm5oU+v5Iw=";
+          hash = "sha256-RLalWaoObvaAKleawusmTb+3O/ZHEll2az7NZao2sDE=";
         };
-        # rustc removed the unstable `--env-set` flag on 2026-08-31
-        # (rust-lang/rust#161831). dylint >= 6.0.3 passes it on every lint
-        # run to invalidate rustc's incremental cache, so its driver fails on
-        # any newer nightly with "Unrecognized option: 'env-set'"
-        # (trailofbits/dylint#2078). Stop passing the flag; this restores the
-        # 6.0.2 behaviour, where a stale incremental cache is the caller's
-        # problem (the fixture checker already lints from a cold target dir).
-        # --replace-fail makes the upstream fix surface here as a build
-        # failure, which is the cue to drop this patch.
+        # The driver names `rustc_session::config::ErrorOutputType`, which
+        # rustc made private there on 2026-11-24 (see the dylint_linting
+        # override above); `cargo dylint` compiles this driver at runtime
+        # against the active nightly, so it needs the same upstream fix
+        # (trailofbits/dylint@a7c307f). --replace-fail makes a release
+        # carrying the fix surface here as a build failure, the cue to drop
+        # this patch.
         postPatch = ''
           substituteInPlace driver/src/lib.rs \
-            --replace-fail 'let untracked_state = hash_from_env(&paths)?;' \
-              'let _ = hash_from_env(&paths)?; let untracked_state: Option<String> = None;'
+            --replace-fail 'rustc_session::config::ErrorOutputType::default()' \
+              'Default::default()'
         '';
       };
       dylintToolsArgs = {
