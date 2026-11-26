@@ -234,7 +234,14 @@ fn evaluated_const_text<'tcx>(
     owner: LocalDefId,
     constant: UnevaluatedConst<'tcx>,
 ) -> Option<String> {
-    let typing_env = ty::TypingEnv::post_analysis(tcx, owner);
+    // Spelled out rather than through the `TypingEnv::post_analysis` helper, which
+    // nightly 2026-11-24 renamed to `post_analysis_no_rigid_aliases`: this crate
+    // builds against both sides of that rename (the rolling default and a
+    // consumer's pinned nightly), and these parts exist under the same names on each.
+    let typing_env = ty::TypingEnv::new(
+        tcx.param_env_normalized_for_post_analysis(owner),
+        ty::TypingMode::PostAnalysis,
+    );
     let value = tcx
         .const_eval_resolve(typing_env, constant, DUMMY_SP)
         .ok()?;
